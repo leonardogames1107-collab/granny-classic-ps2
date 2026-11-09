@@ -18,7 +18,7 @@ Características
 
 Aranhas
 
-- Manter a aranha do último andar (sótão).
+- Manter a aranha do último andar(sótão).
 - Remover a aranha do esgoto.
 - Preservar os demais elementos clássicos.
 
