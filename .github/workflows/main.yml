@@ -13,6 +13,11 @@ jobs:
       - name: Baixar projeto
         uses: actions/checkout@v4
 
+      - name: Instalar Make
+        run: |
+          apk update
+          apk add make
+
       - name: Compilar jogo
         run: make
 
