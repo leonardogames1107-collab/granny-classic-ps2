@@ -28,6 +28,16 @@ jobs:
         run: |
           ls -l /usr/local/ps2dev/gsKit/lib/
           
+      - name: Verificar suporte a PNG
+        run: |
+          echo "Verificando suporte a PNG..."
+          if [ -f "$PS2DEV/ports/include/png.h" ]; then
+            echo "CABECALHO PNG ENCONTRADO"
+          else
+            echo "CABECALHO PNG NAO ENCONTRADO"
+          fi
+          find "$PS2DEV" -iname '*png*' 2>/dev/null | head -20
+          
       - name: Compilar jogo
         run: make
 
