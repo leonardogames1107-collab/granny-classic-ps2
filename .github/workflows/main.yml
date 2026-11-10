@@ -23,7 +23,11 @@ jobs:
           echo "PS2DEV=$PS2DEV"
           echo "GSKIT=$GSKIT"
           find / -name gsKit.h -o -name libgsKit.a 2>/dev/null | head -20
-
+          
+      - name: Verificar bibliotecas
+        run: |
+          ls -l /usr/local/ps2dev/gsKit/lib/
+          
       - name: Compilar jogo
         run: make
 
