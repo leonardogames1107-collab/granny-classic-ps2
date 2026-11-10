@@ -1,0 +1,24 @@
+name: Granny Classic PS2 Build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: ps2dev/ps2dev:latest
+
+    steps:
+      - name: Baixar projeto
+        uses: actions/checkout@v4
+
+      - name: Compilar jogo
+        run: make
+
+      - name: Enviar executável
+        uses: actions/upload-artifact@v4
+        with:
+          name: Granny-Classic-PS2
+          path: granny.elf
+          if-no-files-found: error
