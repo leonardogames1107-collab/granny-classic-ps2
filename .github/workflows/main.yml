@@ -17,6 +17,12 @@ jobs:
         run: |
           apk update
           apk add make
+          
+      - name: Verificar gsKit
+        run: |
+          echo "PS2DEV=$PS2DEV"
+          echo "GSKIT=$GSKIT"
+          find / -name gsKit.h -o -name libgsKit.a 2>/dev/null | head -20
 
       - name: Compilar jogo
         run: make
