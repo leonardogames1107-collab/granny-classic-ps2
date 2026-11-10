@@ -16,7 +16,7 @@ jobs:
       - name: Instalar Make
         run: |
           apk update
-          apk add make
+          apk add make binutils
           
       - name: Verificar gsKit
         run: |
