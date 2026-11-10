@@ -31,7 +31,7 @@ jobs:
       - name: Verificar suporte a PNG
         run: |
           echo "Verificando suporte a PNG..."
-          if [ -f "$PS2DEV/ports/include/png.h" ]; then
+          if [ -f "$PS2DEV/ps2sdk/ports/include/png.h" ]; then
             echo "CABECALHO PNG ENCONTRADO"
           else
             echo "CABECALHO PNG NAO ENCONTRADO"
