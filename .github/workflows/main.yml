@@ -31,9 +31,11 @@ jobs:
       - name: Compilar jogo
         run: make
 
-      - name: Enviar executável
+      - name: Enviar executável e imagem
         uses: actions/upload-artifact@v4
         with:
           name: Granny-Classic-PS2
-          path: granny.elf
+          path: |
+            granny.elf
+            menu.png
           if-no-files-found: error
