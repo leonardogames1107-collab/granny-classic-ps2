@@ -1,6 +1,10 @@
 EE_BIN = granny.elf
 EE_OBJS = main.o
-EE_LIBS = -ldebug
+
+EE_INCS += -I$(GSKIT)/include
+EE_LDFLAGS += -L$(GSKIT)/lib
+
+EE_LIBS = -lpad -lgskit_toolkit -lgskit -ldmakit -ldebug
 
 all: $(EE_BIN)
 
