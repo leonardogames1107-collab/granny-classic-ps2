@@ -9,6 +9,8 @@ int main(int argc, char *argv[])
 {
     GSGLOBAL *gsGlobal;
     GSFONTM *font;
+    GSTEXTURE background = {0};
+    int backgroundLoaded = 0;
 
     struct padButtonStatus buttons;
     unsigned short oldButtons = 0;
@@ -48,6 +50,23 @@ int main(int argc, char *argv[])
     gsKit_init_screen(gsGlobal);
     gsKit_fontm_upload(gsGlobal, font);
     gsKit_mode_switch(gsGlobal, GS_ONESHOT);
+    
+    /* Carregar imagem de fundo */
+    background.Delayed = GS_SETTING_ON;
+
+if (gsKit_texture_png(
+    gsGlobal,
+    &background,
+    "mass:/GRANNY/menu_ps2.png"
+) == 0)
+{
+    backgroundLoaded = 1;
+    message = "IMAGEM CARREGADA!";
+}
+else
+{
+    message = "ERRO AO CARREGAR IMAGEM";
+}
 
     /* Inicializar controle */
     if (padInit(0) == 1)
