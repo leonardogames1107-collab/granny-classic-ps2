@@ -50,6 +50,10 @@ jobs:
       - name: Procurar funcao PNG na biblioteca
         run: |
           strings /usr/local/ps2dev/gsKit/lib/libgskit_toolkit.a | grep 'gsKit_texture_png' || true
+
+      - name: Conferir dependencias de imagem
+        run: |
+          find "$PS2DEV/ps2sdk/ports/lib" -maxdepth 1 \( -name 'libjpeg*' -o -name 'libtiff*' -o -name 'libz*' \) 2>/dev/null
           
       - name: Verificar suporte a PNG
         run: |
