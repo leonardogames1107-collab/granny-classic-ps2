@@ -22,10 +22,20 @@ jobs:
         run: |
           python3 -c "from PIL import Image; print('PILLOW FUNCIONANDO')"
 
-      - name: Preparar imagem do menu
+            - name: Preparar imagens do menu
         run: |
-          python3 -c "from PIL import Image; img=Image.open('menu.png').convert('RGB'); img=img.resize((512,256)); img.save('menu_ps2.png')"
-          ls -lh menu_ps2.png
+          python3 - <<'PY'
+          from PIL import Image
+
+          img = Image.open('menu.png').convert('RGB')
+          img = img.resize((512, 256))
+          img.save('menu_ps2.png')
+          img.save('menu_jogar.png')
+          img.save('menu_opcoes.png')
+          img.save('menu_sair.png')
+          PY
+
+          ls -lh menu_*.png
           
       - name: Verificar gsKit
         run: |
