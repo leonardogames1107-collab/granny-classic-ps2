@@ -49,6 +49,28 @@ jobs:
           recorte.save('recorte_menu.png')
           PY
           
+      - name: Testar letras cinzas
+        run: |
+          python3 - <<'PY'
+          from PIL import Image
+
+          img = Image.open('menu_ps2.png').convert('RGB')
+
+          areas = [
+              (40, 140, 140, 160),
+              (40, 180, 140, 200)
+          ]
+
+          for x1, y1, x2, y2 in areas:
+              for y in range(y1, y2):
+                  for x in range(x1, x2):
+                      r, g, b = img.getpixel((x, y))
+                      if max(r, g, b) - min(r, g, b) < 20 and 60 < r < 230:
+                          img.putpixel((x, y), (255, 0, 255))
+
+          img.crop((0, 80, 200, 240)).save('recorte_menu.png')
+          PY
+           
       - name: Verificar gsKit
         run: |
           echo "PS2DEV=$PS2DEV"
