@@ -94,4 +94,5 @@ jobs:
             menu_opcoes.png
             menu_sair.png
             diagnostico.png
+            recorte_menu.png
           if-no-files-found: error
