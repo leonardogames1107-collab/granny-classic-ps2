@@ -29,7 +29,18 @@ jobs:
 
           img = Image.open('menu.png').convert('RGB')
           img = img.resize((512, 256))
-          img.crop((0, 90, 180, 250)).save('recorte_menu.png')
+          from PIL import ImageDraw
+
+recorte = img.crop((0, 80, 200, 200))
+desenho = ImageDraw.Draw(recorte)
+
+for x in range(0, 201, 10):
+    desenho.line((x, 0, x, 120), fill=(0, 255, 0), width=1)
+
+for y in range(0, 121, 10):
+    desenho.line((0, y, 200, y), fill=(0, 255, 0), width=1)
+
+recorte.save('recorte_menu.png')
           PY
           
       - name: Verificar gsKit
