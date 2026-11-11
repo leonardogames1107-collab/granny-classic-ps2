@@ -22,28 +22,14 @@ jobs:
         run: |
           python3 -c "from PIL import Image; print('PILLOW FUNCIONANDO')"
 
-      - name: Localizar textos cinzas
+      - name: Analisar menu esquerdo
         run: |
           python3 - <<'PY'
           from PIL import Image
-          from collections import defaultdict
 
           img = Image.open('menu.png').convert('RGB')
-          px = img.load()
-          faixas = defaultdict(list)
-
-          for y in range(img.height):
-              for x in range(img.width):
-                  r, g, b = px[x, y]
-
-                  if 90 < r < 220 and abs(r-g) < 12 and abs(g-b) < 12:
-                      faixas[y // 8].append(x)
-
-          for faixa, xs in sorted(faixas.items()):
-              if len(xs) >= 20:
-                  print("Y:", faixa*8, "-", faixa*8+7,
-                        "PIXELS:", len(xs),
-                        "X:", min(xs), "-", max(xs))
+          img = img.resize((512, 288))
+          img.crop((0, 90, 180, 190)).save('recorte_menu.png')
           PY
           
       - name: Verificar gsKit
