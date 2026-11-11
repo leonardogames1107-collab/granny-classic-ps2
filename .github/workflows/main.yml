@@ -35,7 +35,7 @@ jobs:
           desenho = ImageDraw.Draw(recorte)
 
           for x in range(0, 201, 10):
-              desenho.line((x, 0, x, 120), fill=(0, 255, 0), width=1)
+              desenho.line((x, 0, x, 160), fill=(0, 255, 0), width=1)
 
           for y in range(0, 161, 10):
               desenho.line((0, y, 200, y), fill=(0, 255, 0), width=1)
