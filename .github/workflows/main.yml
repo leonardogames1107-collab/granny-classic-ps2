@@ -39,6 +39,10 @@ jobs:
         run: |
           grep -R "gsKit_texture_png" /usr/local/ps2dev/gsKit/include/
           
+      - name: Conferir suporte PNG no código do gsKit
+        run: |
+          grep -n -B 5 -A 8 "HAVE_LIBPNG" /usr/local/ps2dev/gsKit/../gsKit/ee/toolkit/src/gsToolkit.c
+          
       - name: Verificar suporte a PNG
         run: |
           echo "Verificando suporte a PNG..."
