@@ -28,6 +28,14 @@ jobs:
         run: |
           ls -l /usr/local/ps2dev/gsKit/lib/
           
+      - name: Conferir configuração PNG do gsKit
+        run: |
+          if [ -f "$GSKIT/lib/pkgconfig/gsKit.pc" ]; then
+            cat "$GSKIT/lib/pkgconfig/gsKit.pc"
+          else
+            echo "ARQUIVO gsKit.pc NAO ENCONTRADO"
+          fi
+          
       - name: Verificar suporte a PNG
         run: |
           echo "Verificando suporte a PNG..."
