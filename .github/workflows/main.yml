@@ -22,25 +22,25 @@ jobs:
         run: |
           python3 -c "from PIL import Image; print('PILLOW FUNCIONANDO')"
 
+      
       - name: Analisar menu esquerdo
         run: |
           python3 - <<'PY'
-          from PIL import Image
+          from PIL import Image, ImageDraw
 
           img = Image.open('menu.png').convert('RGB')
           img = img.resize((512, 256))
-          from PIL import ImageDraw
 
-recorte = img.crop((0, 80, 200, 200))
-desenho = ImageDraw.Draw(recorte)
+          recorte = img.crop((0, 80, 200, 200))
+          desenho = ImageDraw.Draw(recorte)
 
-for x in range(0, 201, 10):
-    desenho.line((x, 0, x, 120), fill=(0, 255, 0), width=1)
+          for x in range(0, 201, 10):
+              desenho.line((x, 0, x, 120), fill=(0, 255, 0), width=1)
 
-for y in range(0, 121, 10):
-    desenho.line((0, y, 200, y), fill=(0, 255, 0), width=1)
+          for y in range(0, 121, 10):
+              desenho.line((0, y, 200, y), fill=(0, 255, 0), width=1)
 
-recorte.save('recorte_menu.png')
+          recorte.save('recorte_menu.png')
           PY
           
       - name: Verificar gsKit
