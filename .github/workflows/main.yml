@@ -75,7 +75,7 @@ jobs:
               for y in range(y1, y2):
                   for x in range(x1, x2):
                       r, g, b = img.getpixel((x, y))
-                      if max(r, g, b) - min(r, g, b) < 60 and 100 < r < 250:
+                      if max(r, g, b) - min(r, g, b) < 80 and 40 < r < 250:
                           img.putpixel((x, y), (255, 0, 255))
 
           img.crop((0, 80, 200, 240)).save('recorte_menu.png')
