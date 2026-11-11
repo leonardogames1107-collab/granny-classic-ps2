@@ -144,6 +144,19 @@ else
         GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0)
     );
 }
+        /* Destaque vermelho da opção selecionada */
+int highlightY = selected == 0 ? 124 :
+                 selected == 1 ? 156 : 188;
+
+int left = (32 * gsGlobal->Width) / 512;
+int right = (160 * gsGlobal->Width) / 512;
+int top = (highlightY * gsGlobal->Height) / 256;
+int bottom = ((highlightY + 40) * gsGlobal->Height) / 256;
+
+gsKit_prim_sprite(gsGlobal, left, top, right, top + 3, 2, red);
+gsKit_prim_sprite(gsGlobal, left, bottom - 3, right, bottom, 2, red);
+gsKit_prim_sprite(gsGlobal, left, top, left + 3, bottom, 2, red);
+gsKit_prim_sprite(gsGlobal, right - 3, top, right, bottom, 2, red);
 
         gsKit_queue_exec(gsGlobal);
         gsKit_sync_flip(gsGlobal);
