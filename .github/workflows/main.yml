@@ -22,7 +22,7 @@ jobs:
         run: |
           python3 -c "from PIL import Image; print('PILLOW FUNCIONANDO')"
 
-            - name: Preparar imagens do menu
+      - name: Preparar imagens do menu
         run: |
           python3 - <<'PY'
           from PIL import Image
