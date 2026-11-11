@@ -27,7 +27,6 @@ jobs:
       - name: Verificar bibliotecas
         run: |
           ls -l /usr/local/ps2dev/gsKit/lib/
-          find "$PS2DEV" -name "libgskit_toolkit.a" -exec gcc-nm {} \; | grep gsKit_texture_png
           
       - name: Verificar suporte a PNG
         run: |
