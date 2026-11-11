@@ -22,17 +22,23 @@ jobs:
         run: |
           python3 -c "from PIL import Image; print('PILLOW FUNCIONANDO')"
 
-      
       - name: Analisar menu esquerdo
         run: |
           python3 - <<'PY'
-          from PIL import Image, ImageDraw
+          from PIL import Image, ImageDraw, ImageFont
 
           img = Image.open('menu.png').convert('RGB')
           img = img.resize((512, 256))
 
           recorte = img.crop((0, 80, 200, 240))
           desenho = ImageDraw.Draw(recorte)
+          fonte = ImageFont.load_default()
+
+          for x in range(0, 201, 20):
+              desenho.text((x + 2, 2), str(x), fill=(255, 255, 0), font=fonte)
+
+          for y in range(0, 161, 20):
+              desenho.text((2, y + 2), str(y + 80), fill=(255, 255, 0), font=fonte)
 
           for x in range(0, 201, 10):
               desenho.line((x, 0, x, 160), fill=(0, 255, 0), width=1)
