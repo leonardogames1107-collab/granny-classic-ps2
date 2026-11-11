@@ -41,8 +41,8 @@ jobs:
           
       - name: Conferir suporte PNG no código do gsKit
         run: |
-          find /usr/local/ps2dev/gsKit -name gsToolkit.c
-          
+          find /usr/local/ps2dev -name gsToolkit.c 2>/dev/null
+        
       - name: Verificar suporte a PNG
         run: |
           echo "Verificando suporte a PNG..."
