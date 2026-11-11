@@ -16,7 +16,7 @@ jobs:
       - name: Instalar Make
         run: |
           apk update
-          apk add make binutils pkgconf
+          apk add make binutils pkgconf python3 py3-pillow
           
       - name: Verificar gsKit
         run: |
