@@ -4,7 +4,7 @@ EE_OBJS = main.o
 EE_INCS += -I$(GSKIT)/include
 EE_LDFLAGS += -L$(GSKIT)/lib
 
-EE_LIBS = -lpad -lgskit_toolkit -lgskit -ldmakit -ldebug -lpng -ljpeg -ltiff -lz
+EE_LIBS = -lpad -lgskit_toolkit -lgskit -ldmakit -ldebug
 
 all: $(EE_BIN)
 
