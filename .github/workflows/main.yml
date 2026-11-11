@@ -22,29 +22,21 @@ jobs:
         run: |
           python3 -c "from PIL import Image; print('PILLOW FUNCIONANDO')"
 
-      - name: Analisar faixas vermelhas
+      - name: Criar imagem de diagnostico
         run: |
           python3 - <<'PY'
           from PIL import Image
-          from collections import defaultdict
 
           img = Image.open('menu.png').convert('RGB')
           px = img.load()
-          faixas = defaultdict(list)
 
           for y in range(img.height):
               for x in range(img.width):
                   r, g, b = px[x, y]
                   if r > 80 and r > g * 1.35 and r > b * 1.25:
-                      faixas[y // 8].append(x)
+                      px[x, y] = (255, 0, 255)
 
-          for faixa, xs in sorted(faixas.items()):
-              if len(xs) >= 5:
-                  print(
-                      "Y:", faixa * 8, "-", faixa * 8 + 7,
-                      "PIXELS:", len(xs),
-                      "X:", min(xs), "-", max(xs)
-                  )
+          img.save('diagnostico.png')
           PY
           
       - name: Verificar gsKit
@@ -108,4 +100,5 @@ jobs:
             menu_jogar.png
             menu_opcoes.png
             menu_sair.png
+            diagnostico.png
           if-no-files-found: error
