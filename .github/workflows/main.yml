@@ -37,6 +37,7 @@ jobs:
           fi
       - name: Verificar função PNG
         run: |
+          export PKG_CONFIG_PATH=/usr/local/ps2dev/gsKit/lib/pkgconfig
           grep -R "gsKit_texture_png" /usr/local/ps2dev/gsKit/include/
           echo "Verificando dependência PNG..."
           pkg-config --libs gsKit
