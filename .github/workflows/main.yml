@@ -22,55 +22,29 @@ jobs:
         run: |
           python3 -c "from PIL import Image; print('PILLOW FUNCIONANDO')"
 
-      - name: Separar grupos vermelhos
+      - name: Analisar faixas vermelhas
         run: |
           python3 - <<'PY'
           from PIL import Image
+          from collections import defaultdict
 
           img = Image.open('menu.png').convert('RGB')
-          w, h = img.size
           px = img.load()
-          vistos = set()
-          grupos = []
+          faixas = defaultdict(list)
 
-          for y in range(h):
-              for x in range(w):
+          for y in range(img.height):
+              for x in range(img.width):
                   r, g, b = px[x, y]
+                  if r > 80 and r > g * 1.35 and r > b * 1.25:
+                      faixas[y // 8].append(x)
 
-                  if (r > 80 and r > g * 1.35 and
-                      r > b * 1.25 and (x, y) not in vistos):
-
-                      pilha = [(x, y)]
-                      vistos.add((x, y))
-                      pontos = []
-
-                      while pilha:
-                          cx, cy = pilha.pop()
-                          pontos.append((cx, cy))
-
-                          for nx, ny in (
-                              (cx-1, cy), (cx+1, cy),
-                              (cx, cy-1), (cx, cy+1)
-                          ):
-                              if 0 <= nx < w and 0 <= ny < h:
-                                  if (nx, ny) not in vistos:
-                                      rr, gg, bb = px[nx, ny]
-                                      if (rr > 80 and rr > gg * 1.35
-                                          and rr > bb * 1.25):
-                                          vistos.add((nx, ny))
-                                          pilha.append((nx, ny))
-
-                      if len(pontos) >= 5:
-                          grupos.append((
-                              len(pontos),
-                              min(p[0] for p in pontos),
-                              max(p[0] for p in pontos),
-                              min(p[1] for p in pontos),
-                              max(p[1] for p in pontos)
-                          ))
-
-          for grupo in sorted(grupos, reverse=True)[:30]:
-              print("PIXELS, X1, X2, Y1, Y2:", grupo)
+          for faixa, xs in sorted(faixas.items()):
+              if len(xs) >= 5:
+                  print(
+                      "Y:", faixa * 8, "-", faixa * 8 + 7,
+                      "PIXELS:", len(xs),
+                      "X:", min(xs), "-", max(xs)
+                  )
           PY
           
       - name: Verificar gsKit
