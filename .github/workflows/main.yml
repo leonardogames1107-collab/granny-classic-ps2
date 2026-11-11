@@ -22,19 +22,30 @@ jobs:
         run: |
           python3 -c "from PIL import Image; print('PILLOW FUNCIONANDO')"
 
-      - name: Analisar cores do menu
+      - name: Localizar texto vermelho
         run: |
           python3 - <<'PY'
           from PIL import Image
-          from collections import Counter
 
           img = Image.open('menu.png').convert('RGB')
-          print("Tamanho:", img.size)
+          pixels = img.load()
 
-          cores = Counter(img.getdata())
-          print("Cores mais usadas:")
-          for cor, quantidade in cores.most_common(20):
-              print(cor, quantidade)
+          pontos = []
+
+          for y in range(img.height):
+              for x in range(img.width):
+                  r, g, b = pixels[x, y]
+
+                  if r > 80 and r > g * 1.35 and r > b * 1.25:
+                      pontos.append((x, y))
+
+          print("PIXELS VERMELHOS:", len(pontos))
+
+          if pontos:
+              print("MENOR X:", min(p[0] for p in pontos))
+              print("MAIOR X:", max(p[0] for p in pontos))
+              print("MENOR Y:", min(p[1] for p in pontos))
+              print("MAIOR Y:", max(p[1] for p in pontos))
           PY
           
       - name: Verificar gsKit
