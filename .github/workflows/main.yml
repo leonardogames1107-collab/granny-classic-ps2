@@ -18,6 +18,10 @@ jobs:
           apk update
           apk add make binutils pkgconf python3 py3-pillow
           
+      - name: Testar Pillow
+        run: |
+          python3 -c "from PIL import Image; print('PILLOW FUNCIONANDO')"
+          
       - name: Verificar gsKit
         run: |
           echo "PS2DEV=$PS2DEV"
