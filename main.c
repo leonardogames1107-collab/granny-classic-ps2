@@ -127,13 +127,23 @@ else
         }
 
         gsKit_clear(gsGlobal, black);
+     if (backgroundLoaded)
+{
+    gsKit_TexManager_bind(gsGlobal, &background);
 
-        /* Fundo */
-        gsKit_prim_sprite(
-            gsGlobal, 0, 0,
-            gsGlobal->Width, gsGlobal->Height,
-            1, dark
-        );
+    gsKit_prim_sprite_texture(
+        gsGlobal,
+        &background,
+        0.0f, 0.0f,
+        0.0f, 0.0f,
+        gsGlobal->Width,
+        gsGlobal->Height,
+        background.Width,
+        background.Height,
+        1,
+        GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0)
+    );
+}
 
         /* Faixa superior */
         gsKit_prim_sprite(
