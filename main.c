@@ -117,6 +117,26 @@ if (SifLoadModule("rom0:LIBSD", 0, NULL) >= 0 &&
 
     while (1)
     {
+        if (audioReady && musicFile != NULL)
+{
+    int available = audsrv_available();
+
+    if (available >= sizeof(audioChunk))
+    {
+        int bytes = fread(audioChunk, 1, sizeof(audioChunk), musicFile);
+
+        if (bytes == 0)
+        {
+            fseek(musicFile, musicDataStart, SEEK_SET);
+            bytes = fread(audioChunk, 1, sizeof(audioChunk), musicFile);
+        }
+
+        if (bytes > 0)
+        {
+            audsrv_play_audio(audioChunk, bytes);
+        }
+    }
+}
         if (padOpened)
         {
             state = padGetState(0, 0);
