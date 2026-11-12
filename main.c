@@ -75,6 +75,25 @@ int main(int argc, char *argv[])
         gsGlobal, &fallback, "mass:/GRANNY/menu_ps2.png"
     ) == 0)
         fallbackLoaded = 1;
+    
+    sceSifInitRpc(0);
+
+if (SifLoadModule("rom0:LIBSD", 0, NULL) >= 0 &&
+    SifLoadModule("mass:/GRANNY/audsrv.irx", 0, NULL) >= 0)
+{
+    if (audsrv_init() == 0)
+    {
+        audioFormat.bits = 16;
+        audioFormat.freq = 22050;
+        audioFormat.channels = 2;
+
+        if (audsrv_set_format(&audioFormat) == 0)
+        {
+            audsrv_set_volume(MAX_VOLUME);
+            audioReady = 1;
+        }
+    }
+}
 
     if (padInit(0) == 1)
     {
