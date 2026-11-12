@@ -11,34 +11,38 @@
 
 static unsigned char padBuf[256] __attribute__((aligned(64)));
 
+#define MENU_COUNT 4
+
 int main(int argc, char *argv[])
 {
     GSGLOBAL *gsGlobal;
     GSFONTM *font;
-    GSTEXTURE menus[3] = {{0}};
+    GSTEXTURE menus[MENU_COUNT] = {{0}};
     GSTEXTURE fallback = {0};
 
-    int loaded[3] = {0, 0, 0};
+    const char *paths[MENU_COUNT] = {
+        "mass:/GRANNY/menu_jogar_selecionado.png",
+        "mass:/GRANNY/menu_opcoes_selecionado.png",
+        "mass:/GRANNY/menu_multiplayer_selecionado.png",
+        "mass:/GRANNY/menu_sair_selecionado.png"
+    };
+
+    int loaded[MENU_COUNT] = {0, 0, 0, 0};
     int fallbackLoaded = 0;
     int selected = 0;
     int padOpened = 0;
     int state;
     int audioReady = 0;
+    int oldAnalogDirection = 0;
+
     struct audsrv_fmt_t audioFormat;
     FILE *musicFile = NULL;
     char audioChunk[2048];
     long musicDataStart = 0;
     int audioPendingSize = 0;
 
-    const char *paths[3] = {
-        "mass:/GRANNY/menu_jogar.png",
-        "mass:/GRANNY/menu_opcoes.png",
-        "mass:/GRANNY/menu_sair.png"
-    };
-
     struct padButtonStatus buttons;
     unsigned short oldButtons = 0;
-    int oldAnalogDirection = 0;
     unsigned short currentButtons;
     unsigned short pressedButtons;
 
@@ -66,7 +70,11 @@ int main(int argc, char *argv[])
     gsKit_fontm_upload(gsGlobal, font);
     gsKit_mode_switch(gsGlobal, GS_ONESHOT);
 
-    for (int i = 0; i < 3; i++)
+    /*
+     * Cada imagem já contém o menu completo, com apenas uma placa
+     * vermelha. Assim, basta trocar a textura conforme a opção escolhida.
+     */
+    for (int i = 0; i < MENU_COUNT; i++)
     {
         menus[i].Delayed = GS_SETTING_ON;
 
@@ -79,37 +87,43 @@ int main(int argc, char *argv[])
     if (gsKit_texture_png(
         gsGlobal, &fallback, "mass:/GRANNY/menu_ps2.png"
     ) == 0)
+    {
         fallbackLoaded = 1;
-    
+    }
+
     sceSifInitRpc(0);
 
-if (SifLoadModule("rom0:LIBSD", 0, NULL) >= 0 &&
-    SifLoadModule("mass:/GRANNY/audsrv.irx", 0, NULL) >= 0)
-{
-    if (audsrv_init() == 0)
+    if (SifLoadModule("rom0:LIBSD", 0, NULL) >= 0 &&
+        SifLoadModule("mass:/GRANNY/audsrv.irx", 0, NULL) >= 0)
     {
-        audioFormat.bits = 16;
-        audioFormat.freq = 22050;
-        audioFormat.channels = 2;
-
-        if (audsrv_set_format(&audioFormat) == 0)
+        if (audsrv_init() == 0)
         {
-            audsrv_set_volume(MAX_VOLUME);
-            audioReady = 1;
-            musicFile = fopen("mass:/GRANNY/musica_menu.wav", "rb");
+            audioFormat.bits = 16;
+            audioFormat.freq = 22050;
+            audioFormat.channels = 2;
 
-            if (musicFile != NULL)
+            if (audsrv_set_format(&audioFormat) == 0)
             {
-            musicDataStart = 44;
-            fseek(musicFile, musicDataStart, SEEK_SET);
-            }
-            else
-            {
-                audioReady = 0;
+                audsrv_set_volume(MAX_VOLUME);
+                audioReady = 1;
+
+                musicFile = fopen(
+                    "mass:/GRANNY/musica_menu.wav", "rb"
+                );
+
+                if (musicFile != NULL)
+                {
+                    /* WAV PCM padrão com cabeçalho de 44 bytes. */
+                    musicDataStart = 44;
+                    fseek(musicFile, musicDataStart, SEEK_SET);
+                }
+                else
+                {
+                    audioReady = 0;
+                }
             }
         }
     }
-}
 
     if (padInit(0) == 1)
     {
@@ -119,48 +133,50 @@ if (SifLoadModule("rom0:LIBSD", 0, NULL) >= 0 &&
 
     while (1)
     {
+        /* Música de fundo em loop. */
         if (audioReady && musicFile != NULL)
-{
-    if (audioPendingSize == 0 &&
-        audsrv_available() >= (int)sizeof(audioChunk))
-    {
-        audioPendingSize = fread(
-            audioChunk, 1, sizeof(audioChunk), musicFile
-        );
-
-        if (audioPendingSize == 0)
         {
-            fseek(musicFile, musicDataStart, SEEK_SET);
-
-            audioPendingSize = fread(
-                audioChunk, 1, sizeof(audioChunk), musicFile
-            );
-        }
-    }
-
-    if (audioPendingSize > 0 &&
-        audsrv_available() >= audioPendingSize)
-    {
-        int sent = audsrv_play_audio(
-            audioChunk, audioPendingSize
-        );
-
-        if (sent > 0)
-        {
-            if (sent < audioPendingSize)
+            if (audioPendingSize == 0 &&
+                audsrv_available() >= (int)sizeof(audioChunk))
             {
-                memmove(
-                    audioChunk,
-                    audioChunk + sent,
-                    audioPendingSize - sent
+                audioPendingSize = fread(
+                    audioChunk, 1, sizeof(audioChunk), musicFile
                 );
+
+                if (audioPendingSize == 0)
+                {
+                    fseek(musicFile, musicDataStart, SEEK_SET);
+
+                    audioPendingSize = fread(
+                        audioChunk, 1, sizeof(audioChunk), musicFile
+                    );
+                }
             }
 
-            audioPendingSize -= sent;
-        }
-    }
-}
+            if (audioPendingSize > 0 &&
+                audsrv_available() >= audioPendingSize)
+            {
+                int sent = audsrv_play_audio(
+                    audioChunk, audioPendingSize
+                );
 
+                if (sent > 0)
+                {
+                    if (sent < audioPendingSize)
+                    {
+                        memmove(
+                            audioChunk,
+                            audioChunk + sent,
+                            audioPendingSize - sent
+                        );
+                    }
+
+                    audioPendingSize -= sent;
+                }
+            }
+        }
+
+        /* Navegação pelo controle. */
         if (padOpened)
         {
             state = padGetState(0, 0);
@@ -174,53 +190,65 @@ if (SifLoadModule("rom0:LIBSD", 0, NULL) >= 0 &&
                     oldButtons = currentButtons;
 
                     if (pressedButtons & PAD_UP)
-                        selected = (selected + 2) % 3;
+                        selected = (selected + MENU_COUNT - 1) % MENU_COUNT;
+                    else if (pressedButtons & PAD_DOWN)
+                        selected = (selected + 1) % MENU_COUNT;
+
+                    /* Analógico: uma mudança por inclinação. */
                     if (buttons.ljoy_v < 80)
-{
-    if (oldAnalogDirection != -1)
-        selected = (selected + 2) % 3;
+                    {
+                        if (oldAnalogDirection != -1)
+                            selected = (selected + MENU_COUNT - 1) % MENU_COUNT;
 
-    oldAnalogDirection = -1;
-}
-else if (buttons.ljoy_v > 175)
-{
-    if (oldAnalogDirection != 1)
-        selected = (selected + 1) % 3;
-
-    oldAnalogDirection = 1;
-}
-else
-{
-    oldAnalogDirection = 0;
-}
-
-                    if (pressedButtons & PAD_DOWN)
-                        selected = (selected + 1) % 3;
-
-                    if ((pressedButtons & PAD_CROSS) && selected == 2)
-{
-    if (musicFile != NULL)
-    {
-        fclose(musicFile);
-        musicFile = NULL;
-    }
-
-    if (audioReady)
-    {
-        audsrv_quit();
-        audioReady = 0;
-    }
-
-    padPortClose(0, 0);
-    padEnd();
-    return 0;
-}
+                        oldAnalogDirection = -1;
                     }
-}
+                    else if (buttons.ljoy_v > 175)
+                    {
+                        if (oldAnalogDirection != 1)
+                            selected = (selected + 1) % MENU_COUNT;
+
+                        oldAnalogDirection = 1;
+                    }
+                    else
+                    {
+                        oldAnalogDirection = 0;
+                    }
+
+                    /* Sair é a quarta opção. */
+                    if ((pressedButtons & PAD_CROSS) && selected == 3)
+                    {
+                        if (musicFile != NULL)
+                        {
+                            fclose(musicFile);
+                            musicFile = NULL;
+                        }
+
+                        if (audioReady)
+                        {
+                            audsrv_quit();
+                            audioReady = 0;
+                        }
+
+                        padPortClose(0, 0);
+                        padEnd();
+                        return 0;
+                    }
+
+                    /*
+                     * JOGAR, OPÇÕES e MULTIPLAYER já aparecem e podem
+                     * ser selecionados. Suas telas/funções serão ligadas
+                     * nas próximas etapas do projeto.
+                     */
+                }
+            }
         }
 
         gsKit_clear(gsGlobal, black);
 
+        /*
+         * Usa a imagem correspondente à opção selecionada.
+         * Se ela não carregar, tenta a imagem reserva menu_ps2.png.
+         */
         GSTEXTURE *currentMenu = loaded[selected]
             ? &menus[selected]
             : &fallback;
