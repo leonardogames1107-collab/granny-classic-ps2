@@ -26,6 +26,7 @@ int main(int argc, char *argv[])
 
     struct padButtonStatus buttons;
     unsigned short oldButtons = 0;
+    int oldAnalogDirection = 0;
     unsigned short currentButtons;
     unsigned short pressedButtons;
 
@@ -90,6 +91,24 @@ int main(int argc, char *argv[])
 
                     if (pressedButtons & PAD_UP)
                         selected = (selected + 2) % 3;
+                    if (buttons.ljoy_v < 80)
+{
+    if (oldAnalogDirection != -1)
+        selected = (selected + 2) % 3;
+
+    oldAnalogDirection = -1;
+}
+else if (buttons.ljoy_v > 175)
+{
+    if (oldAnalogDirection != 1)
+        selected = (selected + 1) % 3;
+
+    oldAnalogDirection = 1;
+}
+else
+{
+    oldAnalogDirection = 0;
+}
 
                     if (pressedButtons & PAD_DOWN)
                         selected = (selected + 1) % 3;
