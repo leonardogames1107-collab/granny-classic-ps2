@@ -7,6 +7,7 @@
 #include <sifrpc.h>
 #include <loadfile.h>
 #include <audsrv.h>
+#include <string.h>
 
 static unsigned char padBuf[256] __attribute__((aligned(64)));
 
@@ -27,6 +28,7 @@ int main(int argc, char *argv[])
     FILE *musicFile = NULL;
     char audioChunk[2048];
     long musicDataStart = 0;
+    int audioPendingSize = 0;
 
     const char *paths[3] = {
         "mass:/GRANNY/menu_jogar.png",
@@ -118,6 +120,46 @@ if (SifLoadModule("rom0:LIBSD", 0, NULL) >= 0 &&
     while (1)
     {
         if (audioReady && musicFile != NULL)
+{
+    if (audioPendingSize == 0 &&
+        audsrv_available() >= (int)sizeof(audioChunk))
+    {
+        audioPendingSize = fread(
+            audioChunk, 1, sizeof(audioChunk), musicFile
+        );
+
+        if (audioPendingSize == 0)
+        {
+            fseek(musicFile, musicDataStart, SEEK_SET);
+
+            audioPendingSize = fread(
+                audioChunk, 1, sizeof(audioChunk), musicFile
+            );
+        }
+    }
+
+    if (audioPendingSize > 0 &&
+        audsrv_available() >= audioPendingSize)
+    {
+        int sent = audsrv_play_audio(
+            audioChunk, audioPendingSize
+        );
+
+        if (sent > 0)
+        {
+            if (sent < audioPendingSize)
+            {
+                memmove(
+                    audioChunk,
+                    audioChunk + sent,
+                    audioPendingSize - sent
+                );
+            }
+
+            audioPendingSize -= sent;
+        }
+    }
+}
 {
     int available = audsrv_available();
 
