@@ -2,6 +2,11 @@
 #include <dmaKit.h>
 #include <gsToolkit.h>
 #include <libpad.h>
+#include <stdio.h>
+#include <kernel.h>
+#include <sifrpc.h>
+#include <loadfile.h>
+#include <audsrv.h>
 
 static unsigned char padBuf[256] __attribute__((aligned(64)));
 
