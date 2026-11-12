@@ -113,6 +113,10 @@ jobs:
           
       - name: Compilar jogo
         run: make
+        
+      - name: Copiar módulo de áudio
+        run: |
+          cp "$PS2SDK/iop/irx/audsrv.irx" audsrv.irx
 
       - name: Enviar executável e imagem
         uses: actions/upload-artifact@v4
