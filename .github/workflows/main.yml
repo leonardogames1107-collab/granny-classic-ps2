@@ -133,4 +133,8 @@ jobs:
             menu_sair.png
             diagnostico.png
             recorte_menu.png
+            menu_jogar_selecionado.png
+            menu_opcoes_selecionado.png
+            menu_multiplayer_selecionado.png
+            menu_sair_selecionado.png
           if-no-files-found: error
