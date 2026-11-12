@@ -188,10 +188,36 @@ int main(int argc, char *argv[])
                     currentButtons = (unsigned short)(~buttons.btns);
                     pressedButtons = currentButtons & ~oldButtons;
                     oldButtons = currentButtons;
+                    
+if (pressedButtons & PAD_UP)
+{
+    selected = (selected + MENU_COUNT - 1) % MENU_COUNT;
+    oldAnalogDirection = 0;
+}
+else if (pressedButtons & PAD_DOWN)
+{
+    selected = (selected + 1) % MENU_COUNT;
+    oldAnalogDirection = 0;
+}
+else if (buttons.ljoy_v < 80)
+{
+    if (oldAnalogDirection != -1)
+        selected = (selected + MENU_COUNT - 1) % MENU_COUNT;
 
-                    if (pressedButtons & PAD_UP)
-                        selected = (selected + MENU_COUNT - 1) % MENU_COUNT;
-                    else if (pressedButtons & PAD_DOWN)
+    oldAnalogDirection = -1;
+}
+else if (buttons.ljoy_v > 175)
+{
+    if (oldAnalogDirection != 1)
+        selected = (selected + 1) % MENU_COUNT;
+
+    oldAnalogDirection = 1;
+}
+else
+{
+    oldAnalogDirection = 0;
+}
+                    
                         selected = (selected + 1) % MENU_COUNT;
 
                     /* Analógico: uma mudança por inclinação. */
