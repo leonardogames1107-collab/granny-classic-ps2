@@ -198,14 +198,23 @@ else
                         selected = (selected + 1) % 3;
 
                     if ((pressedButtons & PAD_CROSS) && selected == 2)
-                    {
-                        padPortClose(0, 0);
-                        padEnd();
-                        return 0;
-                    }
-                }
-            }
-        }
+{
+    if (musicFile != NULL)
+    {
+        fclose(musicFile);
+        musicFile = NULL;
+    }
+
+    if (audioReady)
+    {
+        audsrv_quit();
+        audioReady = 0;
+    }
+
+    padPortClose(0, 0);
+    padEnd();
+    return 0;
+}
 
         gsKit_clear(gsGlobal, black);
 
