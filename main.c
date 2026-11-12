@@ -94,6 +94,17 @@ if (SifLoadModule("rom0:LIBSD", 0, NULL) >= 0 &&
         {
             audsrv_set_volume(MAX_VOLUME);
             audioReady = 1;
+            musicFile = fopen("mass:/GRANNY/musica_menu.wav", "rb");
+
+            if (musicFile != NULL)
+            {
+            musicDataStart = 44;
+            fseek(musicFile, musicDataStart, SEEK_SET);
+            }
+            else
+            {
+                audioReady = 0;
+            }
         }
     }
 }
