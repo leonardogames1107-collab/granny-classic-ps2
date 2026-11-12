@@ -22,6 +22,8 @@ int main(int argc, char *argv[])
     int selected = 0;
     int padOpened = 0;
     int state;
+    int audioReady = 0;
+    struct audsrv_fmt_t audioFormat;
 
     const char *paths[3] = {
         "mass:/GRANNY/menu_jogar.png",
