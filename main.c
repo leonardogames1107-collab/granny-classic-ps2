@@ -215,6 +215,9 @@ else
     padEnd();
     return 0;
 }
+                    }
+}
+        }
 
         gsKit_clear(gsGlobal, black);
 
