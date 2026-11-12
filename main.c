@@ -24,6 +24,9 @@ int main(int argc, char *argv[])
     int state;
     int audioReady = 0;
     struct audsrv_fmt_t audioFormat;
+    FILE *musicFile = NULL;
+    char audioChunk[2048];
+    long musicDataStart = 0;
 
     const char *paths[3] = {
         "mass:/GRANNY/menu_jogar.png",
