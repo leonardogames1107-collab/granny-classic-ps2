@@ -246,8 +246,7 @@ int main(int argc, char *argv[])
         gsKit_clear(gsGlobal, black);
 
         /*
-         * Usa a imagem correspondente à opção selecionada.
-         * Se ela não carregar, tenta a imagem reserva menu_ps2.png.
+         * Exibe o menu preservando a proporção original.
          */
         GSTEXTURE *currentMenu = loaded[selected]
             ? &menus[selected]
@@ -255,15 +254,29 @@ int main(int argc, char *argv[])
 
         if (loaded[selected] || fallbackLoaded)
         {
+            float imageWidth = (float)currentMenu->Width;
+            float imageHeight = (float)currentMenu->Height;
+
+            float scaleX = (float)gsGlobal->Width / imageWidth;
+            float scaleY = (float)gsGlobal->Height / imageHeight;
+
+            float scale = scaleX < scaleY ? scaleX : scaleY;
+
+            float drawWidth = imageWidth * scale;
+            float drawHeight = imageHeight * scale;
+
+            float posX = ((float)gsGlobal->Width - drawWidth) / 2.0f;
+            float posY = ((float)gsGlobal->Height - drawHeight) / 2.0f;
+
             gsKit_TexManager_bind(gsGlobal, currentMenu);
 
             gsKit_prim_sprite_texture(
                 gsGlobal,
                 currentMenu,
+                posX, posY,
                 0.0f, 0.0f,
-                0.0f, 0.0f,
-                gsGlobal->Width,
-                gsGlobal->Height,
+                posX + drawWidth,
+                posY + drawHeight,
                 currentMenu->Width,
                 currentMenu->Height,
                 1,
