@@ -123,6 +123,8 @@ jobs:
         with:
           name: Granny-Classic-PS2
           path: |
+            audsrv.irx
+            musica_menu.wav
             granny.elf
             menu.png
             menu_ps2.png
