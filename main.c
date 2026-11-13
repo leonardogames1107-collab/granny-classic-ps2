@@ -33,7 +33,6 @@ int main(int argc, char *argv[])
     int padOpened = 0;
     int state;
     int audioReady = 0;
-    int oldAnalogDirection = 0;
 
     struct audsrv_fmt_t audioFormat;
     FILE *musicFile = NULL;
@@ -70,10 +69,6 @@ int main(int argc, char *argv[])
     gsKit_fontm_upload(gsGlobal, font);
     gsKit_mode_switch(gsGlobal, GS_ONESHOT);
 
-    /*
-     * Cada imagem já contém o menu completo, com apenas uma placa
-     * vermelha. Assim, basta trocar a textura conforme a opção escolhida.
-     */
     for (int i = 0; i < MENU_COUNT; i++)
     {
         menus[i].Delayed = GS_SETTING_ON;
@@ -113,7 +108,6 @@ int main(int argc, char *argv[])
 
                 if (musicFile != NULL)
                 {
-                    /* WAV PCM padrão com cabeçalho de 44 bytes. */
                     musicDataStart = 44;
                     fseek(musicFile, musicDataStart, SEEK_SET);
                 }
@@ -133,7 +127,6 @@ int main(int argc, char *argv[])
 
     while (1)
     {
-        /* Música de fundo em loop. */
         if (audioReady && musicFile != NULL)
         {
             if (audioPendingSize == 0 &&
@@ -176,7 +169,6 @@ int main(int argc, char *argv[])
             }
         }
 
-        /* Navegação pelo controle. */
         if (padOpened)
         {
             state = padGetState(0, 0);
@@ -188,7 +180,7 @@ int main(int argc, char *argv[])
                     currentButtons = (unsigned short)(~buttons.btns);
                     pressedButtons = currentButtons & ~oldButtons;
                     oldButtons = currentButtons;
-                    
+
                     if (pressedButtons & PAD_UP)
                     {
                         selected = (selected + MENU_COUNT - 1) % MENU_COUNT;
@@ -198,7 +190,6 @@ int main(int argc, char *argv[])
                         selected = (selected + 1) % MENU_COUNT;
                     }
 
-                    /* Sair é a quarta opção. */
                     if ((pressedButtons & PAD_CROSS) && selected == 3)
                     {
                         if (musicFile != NULL)
@@ -217,21 +208,12 @@ int main(int argc, char *argv[])
                         padEnd();
                         return 0;
                     }
-
-                    /*
-                     * JOGAR, OPÇÕES e MULTIPLAYER já aparecem e podem
-                     * ser selecionados. Suas telas/funções serão ligadas
-                     * nas próximas etapas do projeto.
-                     */
                 }
             }
         }
 
         gsKit_clear(gsGlobal, black);
 
-        /*
-         * Exibe o menu preservando a proporção original.
-         */
         GSTEXTURE *currentMenu = loaded[selected]
             ? &menus[selected]
             : &fallback;
@@ -268,8 +250,9 @@ int main(int argc, char *argv[])
             );
         }
 
-        gsKit_queue_exec(gsGlobal);
+        /* Ordem ajustada para corresponder aos exemplos do gsKit. */
         gsKit_sync_flip(gsGlobal);
+        gsKit_queue_exec(gsGlobal);
     }
 
     return 0;
