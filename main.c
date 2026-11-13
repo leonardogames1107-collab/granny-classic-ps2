@@ -222,7 +222,6 @@ else
 
                     /* Analógico desativado temporariamente para teste. */
 oldAnalogDirection = 0;
-                    }
 
                     /* Sair é a quarta opção. */
                     if ((pressedButtons & PAD_CROSS) && selected == 3)
