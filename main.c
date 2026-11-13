@@ -73,7 +73,7 @@ int main(int argc, char *argv[])
     {
         menus[i].Delayed = GS_SETTING_ON;
 
-        if (gsKit_texture_png(gsGlobal, &menus[i], paths[i]) == 0)
+        if (gsKit_texture_png(gsGlobal, &menus[i], (char *)paths[i]) == 0)
             loaded[i] = 1;
     }
 
@@ -220,29 +220,16 @@ int main(int argc, char *argv[])
 
         if (loaded[selected] || fallbackLoaded)
         {
-            float imageWidth = (float)currentMenu->Width;
-            float imageHeight = (float)currentMenu->Height;
-
-            float scaleX = (float)gsGlobal->Width / imageWidth;
-            float scaleY = (float)gsGlobal->Height / imageHeight;
-
-            float scale = scaleX < scaleY ? scaleX : scaleY;
-
-            float drawWidth = imageWidth * scale;
-            float drawHeight = imageHeight * scale;
-
-            float posX = ((float)gsGlobal->Width - drawWidth) / 2.0f;
-            float posY = ((float)gsGlobal->Height - drawHeight) / 2.0f;
-
             gsKit_TexManager_bind(gsGlobal, currentMenu);
 
+            /* Estica a imagem para preencher toda a tela do PS2. */
             gsKit_prim_sprite_texture(
                 gsGlobal,
                 currentMenu,
-                posX, posY,
                 0.0f, 0.0f,
-                posX + drawWidth,
-                posY + drawHeight,
+                0.0f, 0.0f,
+                (float)gsGlobal->Width,
+                (float)gsGlobal->Height,
                 currentMenu->Width,
                 currentMenu->Height,
                 1,
