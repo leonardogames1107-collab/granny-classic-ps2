@@ -35,32 +35,63 @@ static int tex_ok(const GSTEXTURE *t)
 }
 
 /* Efeito sonoro do cursor, misturado por software na música. */
+#define SFX_VOICES 3
+#define MUSIC_GAIN 256            /* 256/256 = volume original da música */
+
 static short sfxBuf[22050 * 2];   /* até 1 s estéreo a 22050 Hz */
 static int sfxBytes = 0;
-static int sfxPos = -1;           /* posição em amostras; -1 = parado */
+static int sfxPos[SFX_VOICES] = {-1, -1, -1};   /* -1 = voz livre */
 
-static void mix_sfx(char *chunk, int bytes)
+/* Inicia o som sem cortar o anterior (evita estalo ao trocar rápido). */
+static void sfx_trigger(void)
+{
+    int v, pick = 0;
+
+    if (sfxBytes <= 0)
+        return;
+
+    for (v = 0; v < SFX_VOICES; v++)
+    {
+        if (sfxPos[v] < 0)
+        {
+            sfxPos[v] = 0;
+            return;
+        }
+        if (sfxPos[v] > sfxPos[pick])
+            pick = v;
+    }
+
+    sfxPos[pick] = 0;   /* reaproveita a voz mais antiga (já quase no fim) */
+}
+
+/* Aplica o ganho da música e soma as vozes do efeito, com limite. */
+static void mix_audio(char *chunk, int bytes)
 {
     short *dst = (short *)chunk;
     int n = bytes / 2;
     int total = sfxBytes / 2;
-    int i;
+    int i, v;
 
-    if (sfxPos < 0 || total <= 0)
-        return;
-
-    for (i = 0; i < n && sfxPos < total; i++, sfxPos++)
+    for (i = 0; i < n; i++)
     {
-        int v = dst[i] + sfxBuf[sfxPos];
+        int s = (dst[i] * MUSIC_GAIN) >> 8;
 
-        if (v > 32767)  v = 32767;
-        if (v < -32768) v = -32768;
+        for (v = 0; v < SFX_VOICES; v++)
+        {
+            if (sfxPos[v] >= 0)
+            {
+                s += sfxBuf[sfxPos[v]++];
 
-        dst[i] = (short)v;
+                if (sfxPos[v] >= total)
+                    sfxPos[v] = -1;
+            }
+        }
+
+        if (s > 32767)  s = 32767;
+        if (s < -32768) s = -32768;
+
+        dst[i] = (short)s;
     }
-
-    if (sfxPos >= total)
-        sfxPos = -1;
 }
 
 int main(int argc, char *argv[])
@@ -203,6 +234,29 @@ int main(int argc, char *argv[])
             padOpened = 1;
     }
 
+    /* Envia os destaques à VRAM agora, para não haver pausa (e estalo no
+       áudio) na primeira vez que cada opção é selecionada. */
+    for (int i = 0; i < MENU_COUNT; i++)
+    {
+        if (!highlightLoaded[i])
+            continue;
+
+        gsKit_clear(gsGlobal, black);
+        gsKit_TexManager_bind(gsGlobal, &highlights[i]);
+        gsKit_prim_sprite_texture(
+            gsGlobal,
+            &highlights[i],
+            0.0f, 0.0f,
+            0.0f, 0.0f,
+            1.0f, 1.0f,
+            1.0f, 1.0f,
+            1,
+            GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0)
+        );
+        gsKit_sync_flip(gsGlobal);
+        gsKit_queue_exec(gsGlobal);
+    }
+
     while (1)
     {
         /* ---------- Áudio ---------- */
@@ -223,7 +277,7 @@ int main(int argc, char *argv[])
                 }
 
                 if (audioPendingSize > 0)
-                    mix_sfx(audioChunk, audioPendingSize);
+                    mix_audio(audioChunk, audioPendingSize);
             }
 
             if (audioPendingSize > 0 &&
@@ -286,12 +340,12 @@ int main(int argc, char *argv[])
                     if (goUp)
                     {
                         selected = (selected + MENU_COUNT - 1) % MENU_COUNT;
-                        if (sfxBytes > 0) sfxPos = 0;
+                        sfx_trigger();
                     }
                     else if (goDown)
                     {
                         selected = (selected + 1) % MENU_COUNT;
-                        if (sfxBytes > 0) sfxPos = 0;
+                        sfx_trigger();
                     }
 
                     if ((pressedButtons & PAD_CROSS) && selected == 3)
