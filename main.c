@@ -13,6 +13,10 @@ static unsigned char padBuf[256] __attribute__((aligned(64)));
 
 #define MENU_COUNT 4
 
+/* Zona de ativação do analógico (centro = 0x80). */
+#define STICK_LOW  0x40
+#define STICK_HIGH 0xC0
+
 /* Posição e tamanho de cada botão na imagem base (640x448). */
 typedef struct { float x, y; } ButtonPos;
 
@@ -60,6 +64,10 @@ int main(int argc, char *argv[])
     unsigned short oldButtons = 0;
     unsigned short currentButtons;
     unsigned short pressedButtons;
+
+    int analogSet = 0;
+    int oldStickUp = 0;
+    int oldStickDown = 0;
 
     u64 black = GS_SETREG_RGBAQ(5, 5, 8, 0, 0);
     u64 errorRed = GS_SETREG_RGBAQ(0xC0, 0x00, 0x00, 0x80, 0);
@@ -199,15 +207,40 @@ int main(int argc, char *argv[])
 
             if (state == PAD_STATE_STABLE)
             {
+                /* Liga o modo analógico uma única vez e trava. */
+                if (!analogSet)
+                {
+                    padSetMainMode(0, 0, PAD_MMODE_DUALSHOCK, PAD_MMODE_LOCK);
+                    analogSet = 1;
+                }
+
                 if (padRead(0, 0, &buttons) != 0)
                 {
                     currentButtons = (unsigned short)(~buttons.btns);
                     pressedButtons = currentButtons & ~oldButtons;
                     oldButtons = currentButtons;
 
-                    if (pressedButtons & PAD_UP)
+                    int stickUp = 0, stickDown = 0;
+
+                    /* modo 7 = analógico ativo (só o analógico esquerdo) */
+                    if ((buttons.mode >> 4) == 0x07)
+                    {
+                        stickUp   = buttons.ljoy_v < STICK_LOW;
+                        stickDown = buttons.ljoy_v > STICK_HIGH;
+                    }
+
+                    /* Um movimento por empurrão, igual aos direcionais. */
+                    int goUp   = (pressedButtons & PAD_UP) ||
+                                 (stickUp && !oldStickUp);
+                    int goDown = (pressedButtons & PAD_DOWN) ||
+                                 (stickDown && !oldStickDown);
+
+                    oldStickUp = stickUp;
+                    oldStickDown = stickDown;
+
+                    if (goUp)
                         selected = (selected + MENU_COUNT - 1) % MENU_COUNT;
-                    else if (pressedButtons & PAD_DOWN)
+                    else if (goDown)
                         selected = (selected + 1) % MENU_COUNT;
 
                     if ((pressedButtons & PAD_CROSS) && selected == 3)
