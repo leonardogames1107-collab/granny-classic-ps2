@@ -36,6 +36,7 @@ static int tex_ok(const GSTEXTURE *t)
 
 /* Efeito sonoro do cursor, misturado por software na música. */
 #define SFX_VOICES 3
+#define SFX_FADE   4410            /* amostras (~100 ms) de fade-out no fim */
 #define MUSIC_GAIN 256            /* 256/256 = volume original da música */
 
 static short sfxBuf[22050 * 2];   /* até 1 s estéreo a 22050 Hz */
@@ -80,7 +81,16 @@ static void mix_audio(char *chunk, int bytes)
         {
             if (sfxPos[v] >= 0)
             {
-                s += sfxBuf[sfxPos[v]++];
+                int p = sfxPos[v];
+                int smp = sfxBuf[p];
+                int rem = total - p;
+
+                /* Fade-out garantido: o som nunca termina "cortado". */
+                if (rem < SFX_FADE)
+                    smp = smp * rem / SFX_FADE;
+
+                s += smp;
+                sfxPos[v] = p + 1;
 
                 if (sfxPos[v] >= total)
                     sfxPos[v] = -1;
