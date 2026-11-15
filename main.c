@@ -13,10 +13,26 @@ static unsigned char padBuf[256] __attribute__((aligned(64)));
 
 #define MENU_COUNT 4
 
+/* Posição e tamanho de cada botão na imagem base (640x448). */
+typedef struct { float x, y; } ButtonPos;
+
+static const ButtonPos buttonPos[MENU_COUNT] = {
+    {64.0f, 117.0f},   /* JOGAR       */
+    {64.0f, 193.0f},   /* OPÇÕES      */
+    {64.0f, 262.0f},   /* MULTIPLAYER */
+    {65.0f, 330.0f}    /* SAIR        */
+};
+
+/* Textura válida: carregou e cabe nos limites da GS. */
+static int tex_ok(const GSTEXTURE *t)
+{
+    return t->Width > 0 && t->Height > 0 &&
+           t->Width <= 1024 && t->Height <= 1024;
+}
+
 int main(int argc, char *argv[])
 {
     GSGLOBAL *gsGlobal;
-    GSFONTM *font;
     GSTEXTURE baseMenu = {0};
     GSTEXTURE highlights[MENU_COUNT] = {{0}};
 
@@ -46,13 +62,16 @@ int main(int argc, char *argv[])
     unsigned short pressedButtons;
 
     u64 black = GS_SETREG_RGBAQ(5, 5, 8, 0, 0);
+    u64 errorRed = GS_SETREG_RGBAQ(0xC0, 0x00, 0x00, 0x80, 0);
+
+    /* RPC antes de qualquer acesso a arquivo ou módulo. */
+    sceSifInitRpc(0);
 
     gsGlobal = gsKit_init_global();
-    font = gsKit_init_fontm();
 
     gsGlobal->PSM = GS_PSM_CT24;
     gsGlobal->PSMZ = GS_PSMZ_16S;
-    gsGlobal->PrimAlphaEnable = GS_SETTING_ON;
+    gsGlobal->PrimAlphaEnable = GS_SETTING_OFF;
     gsGlobal->ZBuffering = GS_SETTING_OFF;
 
     dmaKit_init(
@@ -67,35 +86,37 @@ int main(int argc, char *argv[])
     dmaKit_chan_init(DMA_CHANNEL_GIF);
 
     gsKit_init_screen(gsGlobal);
-    gsKit_fontm_upload(gsGlobal, font);
     gsKit_mode_switch(gsGlobal, GS_ONESHOT);
 
-    /*
-     * Carrega um único fundo fixo e quatro camadas transparentes.
-     * As camadas têm o mesmo tamanho do fundo; somente a selecionada
-     * é desenhada por cima a cada quadro.
-     */
+    /* Fundo único 640x448 (PNG indexado de 8 bits). */
     baseMenu.Delayed = GS_SETTING_ON;
     if (gsKit_texture_png(
-        gsGlobal, &baseMenu, "mass:/GRANNY/menu_base.png"
-    ) == 0)
+            gsGlobal, &baseMenu, "mass:/GRANNY/menu_base.png") == 0 &&
+        tex_ok(&baseMenu))
     {
         baseLoaded = 1;
     }
+    else
+    {
+        printf("ERRO: menu_base.png nao carregou\n");
+    }
 
+    /* Destaques pequenos, um por botão. */
     for (int i = 0; i < MENU_COUNT; i++)
     {
         highlights[i].Delayed = GS_SETTING_ON;
 
         if (gsKit_texture_png(
-            gsGlobal, &highlights[i], (char *)highlightPaths[i]
-        ) == 0)
+                gsGlobal, &highlights[i], (char *)highlightPaths[i]) == 0 &&
+            tex_ok(&highlights[i]))
         {
             highlightLoaded[i] = 1;
         }
+        else
+        {
+            printf("ERRO: %s nao carregou\n", highlightPaths[i]);
+        }
     }
-
-    sceSifInitRpc(0);
 
     if (SifLoadModule("rom0:LIBSD", 0, NULL) >= 0 &&
         SifLoadModule("mass:/GRANNY/audsrv.irx", 0, NULL) >= 0)
@@ -111,9 +132,7 @@ int main(int argc, char *argv[])
                 audsrv_set_volume(MAX_VOLUME);
                 audioReady = 1;
 
-                musicFile = fopen(
-                    "mass:/GRANNY/musica_menu.wav", "rb"
-                );
+                musicFile = fopen("mass:/GRANNY/musica_menu.wav", "rb");
 
                 if (musicFile != NULL)
                 {
@@ -136,41 +155,36 @@ int main(int argc, char *argv[])
 
     while (1)
     {
+        /* ---------- Áudio ---------- */
         if (audioReady && musicFile != NULL)
         {
             if (audioPendingSize == 0 &&
                 audsrv_available() >= (int)sizeof(audioChunk))
             {
                 audioPendingSize = fread(
-                    audioChunk, 1, sizeof(audioChunk), musicFile
-                );
+                    audioChunk, 1, sizeof(audioChunk), musicFile);
 
                 if (audioPendingSize == 0)
                 {
                     fseek(musicFile, musicDataStart, SEEK_SET);
 
                     audioPendingSize = fread(
-                        audioChunk, 1, sizeof(audioChunk), musicFile
-                    );
+                        audioChunk, 1, sizeof(audioChunk), musicFile);
                 }
             }
 
             if (audioPendingSize > 0 &&
                 audsrv_available() >= audioPendingSize)
             {
-                int sent = audsrv_play_audio(
-                    audioChunk, audioPendingSize
-                );
+                int sent = audsrv_play_audio(audioChunk, audioPendingSize);
 
                 if (sent > 0)
                 {
                     if (sent < audioPendingSize)
                     {
-                        memmove(
-                            audioChunk,
-                            audioChunk + sent,
-                            audioPendingSize - sent
-                        );
+                        memmove(audioChunk,
+                                audioChunk + sent,
+                                audioPendingSize - sent);
                     }
 
                     audioPendingSize -= sent;
@@ -178,6 +192,7 @@ int main(int argc, char *argv[])
             }
         }
 
+        /* ---------- Controle ---------- */
         if (padOpened)
         {
             state = padGetState(0, 0);
@@ -191,13 +206,9 @@ int main(int argc, char *argv[])
                     oldButtons = currentButtons;
 
                     if (pressedButtons & PAD_UP)
-                    {
                         selected = (selected + MENU_COUNT - 1) % MENU_COUNT;
-                    }
                     else if (pressedButtons & PAD_DOWN)
-                    {
                         selected = (selected + 1) % MENU_COUNT;
-                    }
 
                     if ((pressedButtons & PAD_CROSS) && selected == 3)
                     {
@@ -221,11 +232,16 @@ int main(int argc, char *argv[])
             }
         }
 
+        /* ---------- Vídeo ---------- */
         gsKit_clear(gsGlobal, black);
 
         if (baseLoaded)
         {
-            /* Desenha o cenário e os quatro botões uma única vez por quadro. */
+            /* Fatores de escala: as posições foram medidas em 640x448,
+               mas o modo de vídeo pode ser PAL (640x512). */
+            float sx = (float)gsGlobal->Width  / 640.0f;
+            float sy = (float)gsGlobal->Height / 448.0f;
+
             gsKit_TexManager_bind(gsGlobal, &baseMenu);
             gsKit_prim_sprite_texture(
                 gsGlobal,
@@ -234,40 +250,41 @@ int main(int argc, char *argv[])
                 0.0f, 0.0f,
                 (float)gsGlobal->Width,
                 (float)gsGlobal->Height,
-                baseMenu.Width,
-                baseMenu.Height,
+                (float)baseMenu.Width,
+                (float)baseMenu.Height,
                 1,
                 GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0)
             );
 
-            /* Sobrepõe somente o destaque vermelho da opção selecionada. */
+            /* Destaque opaco só sobre o botão selecionado. */
             if (highlightLoaded[selected])
             {
-                gsKit_set_primalpha(
-                    gsGlobal, GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0
-                );
-                gsKit_set_test(gsGlobal, GS_ATEST_OFF);
+                float x1 = buttonPos[selected].x * sx;
+                float y1 = buttonPos[selected].y * sy;
+                float x2 = x1 + (float)highlights[selected].Width  * sx;
+                float y2 = y1 + (float)highlights[selected].Height * sy;
 
                 gsKit_TexManager_bind(gsGlobal, &highlights[selected]);
                 gsKit_prim_sprite_texture(
                     gsGlobal,
                     &highlights[selected],
+                    x1, y1,
                     0.0f, 0.0f,
-                    0.0f, 0.0f,
-                    (float)gsGlobal->Width,
-                    (float)gsGlobal->Height,
-                    highlights[selected].Width,
-                    highlights[selected].Height,
-                    1,
+                    x2, y2,
+                    (float)highlights[selected].Width,
+                    (float)highlights[selected].Height,
+                    2,
                     GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0)
                 );
-
-                gsKit_set_test(gsGlobal, GS_ATEST_ON);
-                gsKit_set_primalpha(gsGlobal, GS_BLEND_BACK2FRONT, 0);
             }
         }
+        else
+        {
+            /* Sem fundo: mostra um quadrado vermelho em vez de congelar. */
+            gsKit_prim_sprite(
+                gsGlobal, 40.0f, 40.0f, 200.0f, 140.0f, 1, errorRed);
+        }
 
-        /* Ordem ajustada para corresponder aos exemplos do gsKit. */
         gsKit_sync_flip(gsGlobal);
         gsKit_queue_exec(gsGlobal);
     }
