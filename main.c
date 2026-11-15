@@ -17,18 +17,18 @@ int main(int argc, char *argv[])
 {
     GSGLOBAL *gsGlobal;
     GSFONTM *font;
-    GSTEXTURE menus[MENU_COUNT] = {{0}};
-    GSTEXTURE fallback = {0};
+    GSTEXTURE baseMenu = {0};
+    GSTEXTURE highlights[MENU_COUNT] = {{0}};
 
-    const char *paths[MENU_COUNT] = {
-        "mass:/GRANNY/menu_jogar_selecionado.png",
-        "mass:/GRANNY/menu_opcoes_selecionado.png",
-        "mass:/GRANNY/menu_multiplayer_selecionado.png",
-        "mass:/GRANNY/menu_sair_selecionado.png"
+    const char *highlightPaths[MENU_COUNT] = {
+        "mass:/GRANNY/destaque_jogar.png",
+        "mass:/GRANNY/destaque_opcoes.png",
+        "mass:/GRANNY/destaque_multiplayer.png",
+        "mass:/GRANNY/destaque_sair.png"
     };
 
-    int loaded[MENU_COUNT] = {0, 0, 0, 0};
-    int fallbackLoaded = 0;
+    int baseLoaded = 0;
+    int highlightLoaded[MENU_COUNT] = {0, 0, 0, 0};
     int selected = 0;
     int padOpened = 0;
     int state;
@@ -52,6 +52,7 @@ int main(int argc, char *argv[])
 
     gsGlobal->PSM = GS_PSM_CT24;
     gsGlobal->PSMZ = GS_PSMZ_16S;
+    gsGlobal->PrimAlphaEnable = GS_SETTING_ON;
     gsGlobal->ZBuffering = GS_SETTING_OFF;
 
     dmaKit_init(
@@ -69,21 +70,29 @@ int main(int argc, char *argv[])
     gsKit_fontm_upload(gsGlobal, font);
     gsKit_mode_switch(gsGlobal, GS_ONESHOT);
 
-    for (int i = 0; i < MENU_COUNT; i++)
-    {
-        menus[i].Delayed = GS_SETTING_ON;
-
-        if (gsKit_texture_png(gsGlobal, &menus[i], (char *)paths[i]) == 0)
-            loaded[i] = 1;
-    }
-
-    fallback.Delayed = GS_SETTING_ON;
-
+    /*
+     * Carrega um único fundo fixo e quatro camadas transparentes.
+     * As camadas têm o mesmo tamanho do fundo; somente a selecionada
+     * é desenhada por cima a cada quadro.
+     */
+    baseMenu.Delayed = GS_SETTING_ON;
     if (gsKit_texture_png(
-        gsGlobal, &fallback, "mass:/GRANNY/menu_ps2.png"
+        gsGlobal, &baseMenu, "mass:/GRANNY/menu_base.png"
     ) == 0)
     {
-        fallbackLoaded = 1;
+        baseLoaded = 1;
+    }
+
+    for (int i = 0; i < MENU_COUNT; i++)
+    {
+        highlights[i].Delayed = GS_SETTING_ON;
+
+        if (gsKit_texture_png(
+            gsGlobal, &highlights[i], (char *)highlightPaths[i]
+        ) == 0)
+        {
+            highlightLoaded[i] = 1;
+        }
     }
 
     sceSifInitRpc(0);
@@ -214,27 +223,48 @@ int main(int argc, char *argv[])
 
         gsKit_clear(gsGlobal, black);
 
-        GSTEXTURE *currentMenu = loaded[selected]
-            ? &menus[selected]
-            : &fallback;
-
-        if (loaded[selected] || fallbackLoaded)
+        if (baseLoaded)
         {
-            gsKit_TexManager_bind(gsGlobal, currentMenu);
-
-            /* Estica a imagem para preencher toda a tela do PS2. */
+            /* Desenha o cenário e os quatro botões uma única vez por quadro. */
+            gsKit_TexManager_bind(gsGlobal, &baseMenu);
             gsKit_prim_sprite_texture(
                 gsGlobal,
-                currentMenu,
+                &baseMenu,
                 0.0f, 0.0f,
                 0.0f, 0.0f,
                 (float)gsGlobal->Width,
                 (float)gsGlobal->Height,
-                currentMenu->Width,
-                currentMenu->Height,
+                baseMenu.Width,
+                baseMenu.Height,
                 1,
                 GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0)
             );
+
+            /* Sobrepõe somente o destaque vermelho da opção selecionada. */
+            if (highlightLoaded[selected])
+            {
+                gsKit_set_primalpha(
+                    gsGlobal, GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0
+                );
+                gsKit_set_test(gsGlobal, GS_ATEST_OFF);
+
+                gsKit_TexManager_bind(gsGlobal, &highlights[selected]);
+                gsKit_prim_sprite_texture(
+                    gsGlobal,
+                    &highlights[selected],
+                    0.0f, 0.0f,
+                    0.0f, 0.0f,
+                    (float)gsGlobal->Width,
+                    (float)gsGlobal->Height,
+                    highlights[selected].Width,
+                    highlights[selected].Height,
+                    1,
+                    GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0)
+                );
+
+                gsKit_set_test(gsGlobal, GS_ATEST_ON);
+                gsKit_set_primalpha(gsGlobal, GS_BLEND_BACK2FRONT, 0);
+            }
         }
 
         /* Ordem ajustada para corresponder aos exemplos do gsKit. */
