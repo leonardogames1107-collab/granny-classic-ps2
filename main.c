@@ -34,6 +34,35 @@ static int tex_ok(const GSTEXTURE *t)
            t->Width <= 1024 && t->Height <= 1024;
 }
 
+/* Efeito sonoro do cursor, misturado por software na música. */
+static short sfxBuf[22050 * 2];   /* até 1 s estéreo a 22050 Hz */
+static int sfxBytes = 0;
+static int sfxPos = -1;           /* posição em amostras; -1 = parado */
+
+static void mix_sfx(char *chunk, int bytes)
+{
+    short *dst = (short *)chunk;
+    int n = bytes / 2;
+    int total = sfxBytes / 2;
+    int i;
+
+    if (sfxPos < 0 || total <= 0)
+        return;
+
+    for (i = 0; i < n && sfxPos < total; i++, sfxPos++)
+    {
+        int v = dst[i] + sfxBuf[sfxPos];
+
+        if (v > 32767)  v = 32767;
+        if (v < -32768) v = -32768;
+
+        dst[i] = (short)v;
+    }
+
+    if (sfxPos >= total)
+        sfxPos = -1;
+}
+
 int main(int argc, char *argv[])
 {
     GSGLOBAL *gsGlobal;
@@ -56,7 +85,7 @@ int main(int argc, char *argv[])
 
     struct audsrv_fmt_t audioFormat;
     FILE *musicFile = NULL;
-    char audioChunk[2048];
+    char audioChunk[2048] __attribute__((aligned(16)));
     long musicDataStart = 0;
     int audioPendingSize = 0;
 
@@ -155,6 +184,19 @@ int main(int argc, char *argv[])
         }
     }
 
+    if (audioReady)
+    {
+        FILE *sfx = fopen("mass:/GRANNY/som_cursor.wav", "rb");
+
+        if (sfx != NULL)
+        {
+            fseek(sfx, 44, SEEK_SET);
+            sfxBytes = (int)fread(sfxBuf, 1, sizeof(sfxBuf), sfx);
+            fclose(sfx);
+            sfxBytes &= ~3;   /* múltiplo de um quadro estéreo */
+        }
+    }
+
     if (padInit(0) == 1)
     {
         if (padPortOpen(0, 0, padBuf) != 0)
@@ -179,6 +221,9 @@ int main(int argc, char *argv[])
                     audioPendingSize = fread(
                         audioChunk, 1, sizeof(audioChunk), musicFile);
                 }
+
+                if (audioPendingSize > 0)
+                    mix_sfx(audioChunk, audioPendingSize);
             }
 
             if (audioPendingSize > 0 &&
@@ -239,9 +284,15 @@ int main(int argc, char *argv[])
                     oldStickDown = stickDown;
 
                     if (goUp)
+                    {
                         selected = (selected + MENU_COUNT - 1) % MENU_COUNT;
+                        if (sfxBytes > 0) sfxPos = 0;
+                    }
                     else if (goDown)
+                    {
                         selected = (selected + 1) % MENU_COUNT;
+                        if (sfxBytes > 0) sfxPos = 0;
+                    }
 
                     if ((pressedButtons & PAD_CROSS) && selected == 3)
                     {
