@@ -16,125 +16,25 @@ jobs:
       - name: Instalar Make
         run: |
           apk update
-          apk add make binutils pkgconf python3 py3-pillow
-          
-      - name: Verificar audsrv
-        run: |
-          echo "PS2DEV=$PS2DEV"
-          find "$PS2DEV" \( -name audsrv.h -o -name 'libaudsrv*' -o -name audsrv.irx \) -print 2>/dev/null || true
-          
-      - name: Testar Pillow
-        run: |
-          python3 -c "from PIL import Image; print('PILLOW FUNCIONANDO')"
-          
-      - name: Preparar imagem do menu
-        run: |
-          python3 - <<'PY'
-          from PIL import Image
+          apk add make binutils pkgconf
 
-          img = Image.open('menu.png').convert('RGB')
-          img = img.resize((512, 256))
-          img.save('menu_ps2.png')
-          PY
-
-      - name: Analisar menu esquerdo
-        run: |
-          python3 - <<'PY'
-          from PIL import Image, ImageDraw, ImageFont
-
-          img = Image.open('menu.png').convert('RGB')
-          img = img.resize((512, 256))
-
-          recorte = img.crop((0, 80, 200, 240))
-          desenho = ImageDraw.Draw(recorte)
-          fonte = ImageFont.load_default()
-
-          for x in range(0, 201, 20):
-              desenho.text((x + 2, 2), str(x), fill=(255, 255, 0), font=fonte)
-
-          for y in range(0, 161, 20):
-              desenho.text((2, y + 2), str(y + 80), fill=(255, 255, 0), font=fonte)
-
-          for x in range(0, 201, 10):
-              desenho.line((x, 0, x, 160), fill=(0, 255, 0), width=1)
-
-          for y in range(0, 161, 10):
-              desenho.line((0, y, 200, y), fill=(0, 255, 0), width=1)
-
-          recorte.save('recorte_menu.png')
-          PY
-               
-      - name: Verificar gsKit
-        run: |
-          echo "PS2DEV=$PS2DEV"
-          echo "GSKIT=$GSKIT"
-          find / -name gsKit.h -o -name libgsKit.a 2>/dev/null | head -20
-          
-      - name: Verificar bibliotecas
-        run: |
-          ls -l /usr/local/ps2dev/gsKit/lib/
-          
-      - name: Conferir configuração PNG do gsKit
-        run: |
-          if [ -f "$GSKIT/lib/pkgconfig/gsKit.pc" ]; then
-            cat "$GSKIT/lib/pkgconfig/gsKit.pc"
-          else
-            echo "ARQUIVO gsKit.pc NAO ENCONTRADO"
-          fi
-      - name: Verificar função PNG
-        run: |
-          grep -R "gsKit_texture_png" /usr/local/ps2dev/gsKit/include/
-          
-      - name: Conferir suporte PNG no código do gsKit
-        run: |
-          find /usr/local/ps2dev -name gsToolkit.c 2>/dev/null
-          
-      - name: Verificar biblioteca PNG
-        run: |
-          find /usr/local/ps2dev -name '*png*' 2>/dev/null | head -30
-
-      - name: Procurar funcao PNG na biblioteca
-        run: |
-          strings /usr/local/ps2dev/gsKit/lib/libgskit_toolkit.a | grep 'gsKit_texture_png' || true
-
-      - name: Conferir dependencias de imagem
-        run: |
-          find "$PS2DEV/ps2sdk/ports/lib" -maxdepth 1 \( -name 'libjpeg*' -o -name 'libtiff*' -o -name 'libz*' \) 2>/dev/null
-          
-      - name: Verificar suporte a PNG
-        run: |
-          echo "Verificando suporte a PNG..."
-          if [ -f "$PS2DEV/ps2sdk/ports/include/png.h" ]; then
-            echo "CABECALHO PNG ENCONTRADO"
-          else
-            echo "CABECALHO PNG NAO ENCONTRADO"
-          fi
-          find "$PS2DEV" -iname '*png*' 2>/dev/null | head -20
-          
       - name: Compilar jogo
         run: make
-        
-      - name: Copiar módulo de áudio
-        run: |
-          cp "$PS2SDK/iop/irx/audsrv.irx" audsrv.irx
 
-      - name: Enviar executável e imagem
+      - name: Copiar módulo de áudio
+        run: cp "$PS2SDK/iop/irx/audsrv.irx" audsrv.irx
+
+      - name: Enviar arquivos para o pendrive
         uses: actions/upload-artifact@v4
         with:
           name: Granny-Classic-PS2
           path: |
+            granny.elf
             audsrv.irx
             musica_menu.wav
-            granny.elf
-            menu.png
-            menu_ps2.png
-            menu_jogar.png
-            menu_opcoes.png
-            menu_sair.png
-            diagnostico.png
-            recorte_menu.png
-            menu_jogar_selecionado.png
-            menu_opcoes_selecionado.png
-            menu_multiplayer_selecionado.png
-            menu_sair_selecionado.png
+            menu_base.png
+            destaque_jogar.png
+            destaque_opcoes.png
+            destaque_multiplayer.png
+            destaque_sair.png
           if-no-files-found: error
