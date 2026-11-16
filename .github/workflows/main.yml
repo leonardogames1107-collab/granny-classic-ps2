@@ -31,12 +31,5 @@ jobs:
           path: |
             granny.elf
             audsrv.irx
-            musica_menu.wav
-            som_cursor.wav
-            menu_base.png
-            destaque_jogar.png
-            destaque_opcoes.png
-            destaque_multiplayer.png
-            destaque_sair.png
           if-no-files-found: error
           
