@@ -27,6 +27,30 @@ static const ButtonPos buttonPos[MENU_COUNT] = {
     {65.0f, 330.0f}    /* SAIR        */
 };
 
+/* Telas do jogo. */
+#define SCREEN_MENU    0
+#define SCREEN_OPTIONS 1
+#define SCREEN_CREDITS 2
+
+/* Linhas da tela de opções. */
+#define OPT_BRIGHT  0
+#define OPT_LANG    1
+#define OPT_MUSIC   2
+#define OPT_MASTER  3
+#define OPT_CREDITS 4
+#define OPT_ROWS    5
+
+/* Layout das imagens da tela de opções (640x448). */
+#define OPT_ROW_X1   60.0f
+#define OPT_ROW_X2   580.0f
+#define OPT_ROW_HALF 23.0f
+#define OPT_BAR_X    360.0f
+#define OPT_SEG_W    17.0f
+#define OPT_SEG_GAP  4.0f
+#define OPT_SEG_H    18.0f
+
+static const float optCenterY[OPT_ROWS] = {150.0f, 204.0f, 258.0f, 312.0f, 366.0f};
+
 /* Textura válida: carregou e cabe nos limites da GS. */
 static int tex_ok(const GSTEXTURE *t)
 {
@@ -34,10 +58,87 @@ static int tex_ok(const GSTEXTURE *t)
            t->Width <= 1024 && t->Height <= 1024;
 }
 
+/* Idiomas: 0 = português, 1 = inglês, 2 = espanhol, 3 = japonês. */
+#define LANGS 4
+
+static const char *langCode[LANGS] = {"pt", "en", "es", "ja"};
+static const char *btnName[MENU_COUNT] = {"jogar", "opcoes", "multiplayer", "sair"};
+
+/* Todas as imagens que mudam com o idioma. */
+typedef struct {
+    GSTEXTURE menu;              int menuOk;    /* menu principal  */
+    GSTEXTURE hl[MENU_COUNT];    int hlOk[MENU_COUNT];   /* destaques */
+    GSTEXTURE opt;               int optOk;     /* tela de opções  */
+    GSTEXTURE cred;              int credOk;    /* tela de créditos */
+} LangAssets;
+
+static LangAssets assets[LANGS];
+
+static int load_png(GSGLOBAL *g, GSTEXTURE *t, const char *name)
+{
+    char path[64];
+
+    snprintf(path, sizeof(path), "mass:/GRANNY/%s.png", name);
+    memset(t, 0, sizeof(*t));
+    t->Delayed = GS_SETTING_ON;
+
+    if (gsKit_texture_png(g, t, path) == 0 && tex_ok(t))
+        return 1;
+
+    printf("ERRO: %s nao carregou\n", path);
+    return 0;
+}
+
+static void load_assets(GSGLOBAL *g)
+{
+    char name[48];
+    int l, b;
+
+    for (l = 0; l < LANGS; l++)
+    {
+        snprintf(name, sizeof(name), "menu_%s", langCode[l]);
+        assets[l].menuOk = load_png(g, &assets[l].menu, name);
+
+        for (b = 0; b < MENU_COUNT; b++)
+        {
+            snprintf(name, sizeof(name), "destaque_%s_%s",
+                     langCode[l], btnName[b]);
+            assets[l].hlOk[b] = load_png(g, &assets[l].hl[b], name);
+        }
+
+        snprintf(name, sizeof(name), "opcoes_%s", langCode[l]);
+        assets[l].optOk = load_png(g, &assets[l].opt, name);
+
+        snprintf(name, sizeof(name), "creditos_%s", langCode[l]);
+        assets[l].credOk = load_png(g, &assets[l].cred, name);
+    }
+}
+
 /* Efeito sonoro do cursor, misturado por software na música. */
 #define SFX_VOICES 3
 #define SFX_FADE   4410            /* amostras (~100 ms) de fade-out no fim */
-#define MUSIC_GAIN 256            /* 256/256 = volume original da música */
+
+/* Volumes ajustáveis na tela de opções (256 = 100%). */
+static int musicGain = 256;
+static int sfxGain   = 256;
+
+/* musicVol = volume da música; masterVol = volume base (geral). 0..10 */
+static void set_volumes(int musicVol, int masterVol)
+{
+    musicGain = musicVol * masterVol * 256 / 100;
+    sfxGain   = masterVol * 256 / 10;
+}
+
+/* Brilho 0..10 (5 = original): escurece/clareia as imagens do jogo. */
+static u64 tint(int level)
+{
+    int v = 0x80 * (40 + 12 * level) / 100;
+
+    if (v > 0xFF)
+        v = 0xFF;
+
+    return GS_SETREG_RGBAQ(v, v, v, 0x80, 0);
+}
 
 static short sfxBuf[22050 * 2];   /* até 1 s estéreo a 22050 Hz */
 static int sfxBytes = 0;
@@ -75,14 +176,14 @@ static void mix_audio(char *chunk, int bytes)
 
     for (i = 0; i < n; i++)
     {
-        int s = (dst[i] * MUSIC_GAIN) >> 8;
+        int s = (dst[i] * musicGain) >> 8;
 
         for (v = 0; v < SFX_VOICES; v++)
         {
             if (sfxPos[v] >= 0)
             {
                 int p = sfxPos[v];
-                int smp = sfxBuf[p];
+                int smp = (sfxBuf[p] * sfxGain) >> 8;
                 int rem = total - p;
 
                 /* Fade-out garantido: o som nunca termina "cortado". */
@@ -204,18 +305,13 @@ static int music_read(FILE *f, char *buf, int size, long dataStart,
 int main(int argc, char *argv[])
 {
     GSGLOBAL *gsGlobal;
-    GSTEXTURE baseMenu = {0};
-    GSTEXTURE highlights[MENU_COUNT] = {{0}};
+    int screen = SCREEN_MENU;
+    int optSel = 0;
+    int brightness = 5;     /* 0..10, 5 = original */
+    int language = 0;       /* 0=português 1=inglês 2=espanhol 3=japonês */
+    int musicVol = 10;      /* 0..10 */
+    int masterVol = 10;     /* 0..10 (volume base) */
 
-    const char *highlightPaths[MENU_COUNT] = {
-        "mass:/GRANNY/destaque_jogar.png",
-        "mass:/GRANNY/destaque_opcoes.png",
-        "mass:/GRANNY/destaque_multiplayer.png",
-        "mass:/GRANNY/destaque_sair.png"
-    };
-
-    int baseLoaded = 0;
-    int highlightLoaded[MENU_COUNT] = {0, 0, 0, 0};
     int selected = 0;
     int padOpened = 0;
     int state;
@@ -237,6 +333,8 @@ int main(int argc, char *argv[])
     int analogSet = 0;
     int oldStickUp = 0;
     int oldStickDown = 0;
+    int oldStickLeft = 0;
+    int oldStickRight = 0;
 
     u64 black = GS_SETREG_RGBAQ(5, 5, 8, 0, 0);
     u64 errorRed = GS_SETREG_RGBAQ(0xC0, 0x00, 0x00, 0x80, 0);
@@ -265,35 +363,9 @@ int main(int argc, char *argv[])
     gsKit_init_screen(gsGlobal);
     gsKit_mode_switch(gsGlobal, GS_ONESHOT);
 
-    /* Fundo único 640x448 (PNG indexado de 8 bits). */
-    baseMenu.Delayed = GS_SETTING_ON;
-    if (gsKit_texture_png(
-            gsGlobal, &baseMenu, "mass:/GRANNY/menu_base.png") == 0 &&
-        tex_ok(&baseMenu))
-    {
-        baseLoaded = 1;
-    }
-    else
-    {
-        printf("ERRO: menu_base.png nao carregou\n");
-    }
-
-    /* Destaques pequenos, um por botão. */
-    for (int i = 0; i < MENU_COUNT; i++)
-    {
-        highlights[i].Delayed = GS_SETTING_ON;
-
-        if (gsKit_texture_png(
-                gsGlobal, &highlights[i], (char *)highlightPaths[i]) == 0 &&
-            tex_ok(&highlights[i]))
-        {
-            highlightLoaded[i] = 1;
-        }
-        else
-        {
-            printf("ERRO: %s nao carregou\n", highlightPaths[i]);
-        }
-    }
+    /* Carrega as imagens de todos os idiomas antes de iniciar o áudio,
+       para trocar de idioma depois sem pausas. */
+    load_assets(gsGlobal);
 
     if (SifLoadModule("rom0:LIBSD", 0, NULL) >= 0 &&
         SifLoadModule("mass:/GRANNY/audsrv.irx", 0, NULL) >= 0)
@@ -356,29 +428,6 @@ int main(int argc, char *argv[])
             padOpened = 1;
     }
 
-    /* Envia os destaques à VRAM agora, para não haver pausa (e estalo no
-       áudio) na primeira vez que cada opção é selecionada. */
-    for (int i = 0; i < MENU_COUNT; i++)
-    {
-        if (!highlightLoaded[i])
-            continue;
-
-        gsKit_clear(gsGlobal, black);
-        gsKit_TexManager_bind(gsGlobal, &highlights[i]);
-        gsKit_prim_sprite_texture(
-            gsGlobal,
-            &highlights[i],
-            0.0f, 0.0f,
-            0.0f, 0.0f,
-            1.0f, 1.0f,
-            1.0f, 1.0f,
-            1,
-            GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0)
-        );
-        gsKit_sync_flip(gsGlobal);
-        gsKit_queue_exec(gsGlobal);
-    }
-
     while (1)
     {
         /* ---------- Áudio ---------- */
@@ -438,51 +487,142 @@ int main(int argc, char *argv[])
                     oldButtons = currentButtons;
 
                     int stickUp = 0, stickDown = 0;
+                    int stickLeft = 0, stickRight = 0;
 
                     /* modo 7 = analógico ativo (só o analógico esquerdo) */
                     if ((buttons.mode >> 4) == 0x07)
                     {
-                        stickUp   = buttons.ljoy_v < STICK_LOW;
-                        stickDown = buttons.ljoy_v > STICK_HIGH;
+                        stickUp    = buttons.ljoy_v < STICK_LOW;
+                        stickDown  = buttons.ljoy_v > STICK_HIGH;
+                        stickLeft  = buttons.ljoy_h < STICK_LOW;
+                        stickRight = buttons.ljoy_h > STICK_HIGH;
                     }
 
                     /* Um movimento por empurrão, igual aos direcionais. */
-                    int goUp   = (pressedButtons & PAD_UP) ||
-                                 (stickUp && !oldStickUp);
-                    int goDown = (pressedButtons & PAD_DOWN) ||
-                                 (stickDown && !oldStickDown);
+                    int goUp    = (pressedButtons & PAD_UP) ||
+                                  (stickUp && !oldStickUp);
+                    int goDown  = (pressedButtons & PAD_DOWN) ||
+                                  (stickDown && !oldStickDown);
+                    int goLeft  = (pressedButtons & PAD_LEFT) ||
+                                  (stickLeft && !oldStickLeft);
+                    int goRight = (pressedButtons & PAD_RIGHT) ||
+                                  (stickRight && !oldStickRight);
 
                     oldStickUp = stickUp;
                     oldStickDown = stickDown;
+                    oldStickLeft = stickLeft;
+                    oldStickRight = stickRight;
 
-                    if (goUp)
+                    if (screen == SCREEN_MENU)
                     {
-                        selected = (selected + MENU_COUNT - 1) % MENU_COUNT;
-                        sfx_trigger();
-                    }
-                    else if (goDown)
-                    {
-                        selected = (selected + 1) % MENU_COUNT;
-                        sfx_trigger();
-                    }
-
-                    if ((pressedButtons & PAD_CROSS) && selected == 3)
-                    {
-                        if (musicFile != NULL)
+                        if (goUp)
                         {
-                            fclose(musicFile);
-                            musicFile = NULL;
+                            selected = (selected + MENU_COUNT - 1) % MENU_COUNT;
+                            sfx_trigger();
+                        }
+                        else if (goDown)
+                        {
+                            selected = (selected + 1) % MENU_COUNT;
+                            sfx_trigger();
                         }
 
-                        if (audioReady)
+                        if (pressedButtons & PAD_CROSS)
                         {
-                            audsrv_quit();
-                            audioReady = 0;
+                            if (selected == 1)          /* OPÇÕES */
+                            {
+                                screen = SCREEN_OPTIONS;
+                                optSel = 0;
+                                sfx_trigger();
+                            }
+                            else if (selected == 3)     /* SAIR */
+                            {
+                                if (musicFile != NULL)
+                                {
+                                    fclose(musicFile);
+                                    musicFile = NULL;
+                                }
+
+                                if (audioReady)
+                                {
+                                    audsrv_quit();
+                                    audioReady = 0;
+                                }
+
+                                padPortClose(0, 0);
+                                padEnd();
+                                return 0;
+                            }
+                        }
+                    }
+                    else if (screen == SCREEN_OPTIONS)
+                    {
+                        if (goUp)
+                        {
+                            optSel = (optSel + OPT_ROWS - 1) % OPT_ROWS;
+                            sfx_trigger();
+                        }
+                        else if (goDown)
+                        {
+                            optSel = (optSel + 1) % OPT_ROWS;
+                            sfx_trigger();
                         }
 
-                        padPortClose(0, 0);
-                        padEnd();
-                        return 0;
+                        if (goLeft || goRight)
+                        {
+                            int d = goRight ? 1 : -1;
+
+                            if (optSel == OPT_BRIGHT)
+                            {
+                                brightness += d;
+                                if (brightness < 0)  brightness = 0;
+                                if (brightness > 10) brightness = 10;
+                            }
+                            else if (optSel == OPT_LANG)
+                            {
+                                language = (language + d + LANGS) % LANGS;
+                                sfx_trigger();
+                            }
+                            else if (optSel == OPT_MUSIC)
+                            {
+                                musicVol += d;
+                                if (musicVol < 0)  musicVol = 0;
+                                if (musicVol > 10) musicVol = 10;
+                                set_volumes(musicVol, masterVol);
+                            }
+                            else if (optSel == OPT_MASTER)
+                            {
+                                masterVol += d;
+                                if (masterVol < 0)  masterVol = 0;
+                                if (masterVol > 10) masterVol = 10;
+                                set_volumes(musicVol, masterVol);
+                                sfx_trigger();   /* prévia do volume */
+                            }
+                        }
+
+                        if ((pressedButtons & PAD_CROSS) && optSel == OPT_CREDITS)
+                        {
+                            screen = SCREEN_CREDITS;
+                            sfx_trigger();
+                        }
+                        else if ((pressedButtons & PAD_CROSS) && optSel == OPT_LANG)
+                        {
+                            language = (language + 1) % LANGS;
+                            sfx_trigger();
+                        }
+
+                        if (pressedButtons & PAD_CIRCLE)
+                        {
+                            screen = SCREEN_MENU;
+                            sfx_trigger();
+                        }
+                    }
+                    else /* SCREEN_CREDITS */
+                    {
+                        if (pressedButtons & (PAD_CIRCLE | PAD_CROSS))
+                        {
+                            screen = SCREEN_OPTIONS;
+                            sfx_trigger();
+                        }
                     }
                 }
             }
@@ -491,46 +631,121 @@ int main(int argc, char *argv[])
         /* ---------- Vídeo ---------- */
         gsKit_clear(gsGlobal, black);
 
-        if (baseLoaded)
+        if (screen == SCREEN_CREDITS)
+        {
+            if (assets[language].credOk)
+            {
+                gsKit_TexManager_bind(gsGlobal, &assets[language].cred);
+                gsKit_prim_sprite_texture(
+                    gsGlobal,
+                    &assets
+                    0.0f, 0.0f,
+                    0.0f, 0.0f,
+                    (float)gsGlobal->Width,
+                    (float)gsGlobal->Height,
+                    (float)assets[language].cred.Width,
+                    (float)assets[language].cred.Height,
+                    1,
+                    tint(brightness)
+                );
+            }
+        }
+        else if (screen == SCREEN_OPTIONS)
+        {
+            float sx = (float)gsGlobal->Width  / 640.0f;
+            float sy = (float)gsGlobal->Height / 448.0f;
+            u64 barOn  = GS_SETREG_RGBAQ(0xB4, 0x12, 0x12, 0x80, 0);
+            u64 barOff = GS_SETREG_RGBAQ(0x2A, 0x28, 0x28, 0x80, 0);
+            u64 frame  = GS_SETREG_RGBAQ(0xD0, 0x20, 0x20, 0x80, 0);
+            const int barRow[3] = {OPT_BRIGHT, OPT_MUSIC, OPT_MASTER};
+            const int barVal[3] = {brightness, musicVol, masterVol};
+            float fy1 = (optCenterY[optSel] - OPT_ROW_HALF) * sy;
+            float fy2 = (optCenterY[optSel] + OPT_ROW_HALF) * sy;
+            float fx1 = OPT_ROW_X1 * sx;
+            float fx2 = OPT_ROW_X2 * sx;
+            float t = 2.0f * sy;
+            int r, i;
+
+            if (assets[language].optOk)
+            {
+                gsKit_TexManager_bind(gsGlobal, &assets[language].opt);
+                gsKit_prim_sprite_texture(
+                    gsGlobal,
+                    &assets[language].opt,
+                    0.0f, 0.0f,
+                    0.0f, 0.0f,
+                    (float)gsGlobal->Width,
+                    (float)gsGlobal->Height,
+                    (float)assets[language].opt.Width,
+                    (float)assets[language].opt.Height,
+                    1,
+                    tint(brightness)
+                );
+            }
+
+            /* Barras de 10 segmentos: brilho, volume da música, volume base. */
+            for (r = 0; r < 3; r++)
+            {
+                float by = (optCenterY[barRow[r]] - OPT_SEG_H / 2.0f) * sy;
+
+                for (i = 0; i < 10; i++)
+                {
+                    float bx = (OPT_BAR_X + i * (OPT_SEG_W + OPT_SEG_GAP)) * sx;
+
+                    gsKit_prim_sprite(
+                        gsGlobal,
+                        bx, by,
+                        bx + OPT_SEG_W * sx, by + OPT_SEG_H * sy,
+                        2, (i < barVal[r]) ? barOn : barOff);
+                }
+            }
+
+            /* Moldura vermelha na linha selecionada. */
+            gsKit_prim_sprite(gsGlobal, fx1, fy1, fx2, fy1 + t, 3, frame);
+            gsKit_prim_sprite(gsGlobal, fx1, fy2 - t, fx2, fy2, 3, frame);
+            gsKit_prim_sprite(gsGlobal, fx1, fy1, fx1 + t, fy2, 3, frame);
+            gsKit_prim_sprite(gsGlobal, fx2 - t, fy1, fx2, fy2, 3, frame);
+        }
+        else if (assets[language].menuOk)
         {
             /* Fatores de escala: as posições foram medidas em 640x448,
                mas o modo de vídeo pode ser PAL (640x512). */
             float sx = (float)gsGlobal->Width  / 640.0f;
             float sy = (float)gsGlobal->Height / 448.0f;
 
-            gsKit_TexManager_bind(gsGlobal, &baseMenu);
+            gsKit_TexManager_bind(gsGlobal, &assets[language].menu);
             gsKit_prim_sprite_texture(
                 gsGlobal,
-                &baseMenu,
+                &assets[language].menu,
                 0.0f, 0.0f,
                 0.0f, 0.0f,
                 (float)gsGlobal->Width,
                 (float)gsGlobal->Height,
-                (float)baseMenu.Width,
-                (float)baseMenu.Height,
+                (float)assets[language].menu.Width,
+                (float)assets[language].menu.Height,
                 1,
-                GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0)
+                tint(brightness)
             );
 
             /* Destaque opaco só sobre o botão selecionado. */
-            if (highlightLoaded[selected])
+            if (assets[language].hlOk[selected])
             {
                 float x1 = buttonPos[selected].x * sx;
                 float y1 = buttonPos[selected].y * sy;
-                float x2 = x1 + (float)highlights[selected].Width  * sx;
-                float y2 = y1 + (float)highlights[selected].Height * sy;
+                float x2 = x1 + (float)assets[language].hl[selected].Width  * sx;
+                float y2 = y1 + (float)assets[language].hl[selected].Height * sy;
 
-                gsKit_TexManager_bind(gsGlobal, &highlights[selected]);
+                gsKit_TexManager_bind(gsGlobal, &assets[language].hl[selected]);
                 gsKit_prim_sprite_texture(
                     gsGlobal,
-                    &highlights[selected],
+                    &assets[language].hl[selected],
                     x1, y1,
                     0.0f, 0.0f,
                     x2, y2,
-                    (float)highlights[selected].Width,
-                    (float)highlights[selected].Height,
+                    (float)assets[language].hl[selected].Width,
+                    (float)assets[language].hl[selected].Height,
                     2,
-                    GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0)
+                    tint(brightness)
                 );
             }
         }
