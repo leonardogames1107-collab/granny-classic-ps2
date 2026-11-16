@@ -104,6 +104,103 @@ static void mix_audio(char *chunk, int bytes)
     }
 }
 
+/* Localiza o bloco "data" de um WAV (PCM 16 bits, estéreo, 22050 Hz).
+   Posiciona o arquivo no início dos dados e devolve início e tamanho.
+   Assim nenhum byte de cabeçalho/metadado é tocado como áudio. */
+static int wav_open_data(FILE *f, long *dataStart, long *dataSize)
+{
+    unsigned char hdr[12], ch[8], fmt[16];
+    int fmtOk = 0;
+
+    if (fseek(f, 0, SEEK_SET) != 0 || fread(hdr, 1, 12, f) != 12)
+        return 0;
+
+    if (memcmp(hdr, "RIFF", 4) != 0 || memcmp(hdr + 8, "WAVE", 4) != 0)
+        return 0;
+
+    while (fread(ch, 1, 8, f) == 8)
+    {
+        unsigned long sz = (unsigned long)ch[4] |
+                           ((unsigned long)ch[5] << 8) |
+                           ((unsigned long)ch[6] << 16) |
+                           ((unsigned long)ch[7] << 24);
+
+        if (memcmp(ch, "fmt ", 4) == 0)
+        {
+            if (sz < 16 || fread(fmt, 1, 16, f) != 16)
+                return 0;
+
+            fmtOk = ((fmt[0] | (fmt[1] << 8)) == 1) &&                  /* PCM */
+                    ((fmt[2] | (fmt[3] << 8)) == 2) &&                  /* estéreo */
+                    ((fmt[4] | (fmt[5] << 8) | (fmt[6] << 16)) == 22050) &&
+                    ((fmt[14] | (fmt[15] << 8)) == 16);                 /* 16 bits */
+
+            if (fseek(f, (long)((sz - 16) + (sz & 1)), SEEK_CUR) != 0)
+                return 0;
+        }
+        else if (memcmp(ch, "data", 4) == 0)
+        {
+            long cur, end;
+
+            if (!fmtOk)
+                return 0;
+
+            cur = ftell(f);
+            *dataStart = cur;
+            *dataSize = (long)(sz & ~3UL);
+
+            /* Se o cabeçalho prometer mais do que o arquivo tem, limita. */
+            if (fseek(f, 0, SEEK_END) == 0)
+            {
+                end = ftell(f);
+                if (end > cur && *dataSize > ((end - cur) & ~3L))
+                    *dataSize = (end - cur) & ~3L;
+            }
+            if (fseek(f, cur, SEEK_SET) != 0)
+                return 0;
+
+            return *dataSize > 0;
+        }
+        else
+        {
+            if (fseek(f, (long)(sz + (sz & 1)), SEEK_CUR) != 0)
+                return 0;
+        }
+    }
+
+    return 0;
+}
+
+/* Lê o próximo bloco da música, voltando ao início exatamente no fim
+   dos dados (laço sem emendas e sem tocar nada além do áudio). */
+static int music_read(FILE *f, char *buf, int size, long dataStart,
+                      long dataSize, long *remaining)
+{
+    int want = size;
+    int got;
+
+    if (*remaining <= 0)
+    {
+        fseek(f, dataStart, SEEK_SET);
+        *remaining = dataSize;
+    }
+
+    if (want > *remaining)
+        want = (int)*remaining;
+
+    got = (int)fread(buf, 1, (size_t)want, f);
+
+    if (got <= 0)
+    {
+        fseek(f, dataStart, SEEK_SET);
+        *remaining = dataSize;
+        return 0;
+    }
+
+    *remaining -= got;
+    return got;
+}
+
 int main(int argc, char *argv[])
 {
     GSGLOBAL *gsGlobal;
@@ -128,6 +225,8 @@ int main(int argc, char *argv[])
     FILE *musicFile = NULL;
     char audioChunk[2048] __attribute__((aligned(16)));
     long musicDataStart = 0;
+    long musicDataSize = 0;
+    long musicRemaining = 0;
     int audioPendingSize = 0;
 
     struct padButtonStatus buttons;
@@ -212,13 +311,18 @@ int main(int argc, char *argv[])
 
                 musicFile = fopen("mass:/GRANNY/musica_menu.wav", "rb");
 
-                if (musicFile != NULL)
+                if (musicFile != NULL &&
+                    wav_open_data(musicFile, &musicDataStart, &musicDataSize))
                 {
-                    musicDataStart = 44;
-                    fseek(musicFile, musicDataStart, SEEK_SET);
+                    musicRemaining = musicDataSize;
                 }
                 else
                 {
+                    if (musicFile != NULL)
+                    {
+                        fclose(musicFile);
+                        musicFile = NULL;
+                    }
                     audioReady = 0;
                 }
             }
@@ -231,10 +335,18 @@ int main(int argc, char *argv[])
 
         if (sfx != NULL)
         {
-            fseek(sfx, 44, SEEK_SET);
-            sfxBytes = (int)fread(sfxBuf, 1, sizeof(sfxBuf), sfx);
+            long sStart = 0, sSize = 0;
+
+            if (wav_open_data(sfx, &sStart, &sSize))
+            {
+                if (sSize > (long)sizeof(sfxBuf))
+                    sSize = (long)sizeof(sfxBuf);
+
+                sfxBytes = (int)fread(sfxBuf, 1, (size_t)sSize, sfx);
+                sfxBytes &= ~3;   /* múltiplo de um quadro estéreo */
+            }
+
             fclose(sfx);
-            sfxBytes &= ~3;   /* múltiplo de um quadro estéreo */
         }
     }
 
@@ -270,21 +382,14 @@ int main(int argc, char *argv[])
     while (1)
     {
         /* ---------- Áudio ---------- */
-        if (audioReady && musicFile != NULL)
+        for (int pump = 0; pump < 3 && audioReady && musicFile != NULL; pump++)
         {
             if (audioPendingSize == 0 &&
                 audsrv_available() >= (int)sizeof(audioChunk))
             {
-                audioPendingSize = fread(
-                    audioChunk, 1, sizeof(audioChunk), musicFile);
-
-                if (audioPendingSize == 0)
-                {
-                    fseek(musicFile, musicDataStart, SEEK_SET);
-
-                    audioPendingSize = fread(
-                        audioChunk, 1, sizeof(audioChunk), musicFile);
-                }
+                audioPendingSize = music_read(
+                    musicFile, audioChunk, (int)sizeof(audioChunk),
+                    musicDataStart, musicDataSize, &musicRemaining);
 
                 if (audioPendingSize > 0)
                     mix_audio(audioChunk, audioPendingSize);
@@ -307,6 +412,9 @@ int main(int argc, char *argv[])
                     audioPendingSize -= sent;
                 }
             }
+
+            if (audioPendingSize > 0)
+                break;   /* buffer cheio: tenta de novo no próximo quadro */
         }
 
         /* ---------- Controle ---------- */
