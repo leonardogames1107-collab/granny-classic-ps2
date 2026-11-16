@@ -29,6 +29,8 @@ jobs:
           cp destaque_??_*.png GRANNY/
           cp opcoes_??.png GRANNY/
           cp creditos_??.png GRANNY/
+          cp multi_??.png GRANNY/
+          cp dev_??.png GRANNY/
           cp musica_menu.wav GRANNY/
           cp som_cursor.wav GRANNY/
           ls -l GRANNY
