@@ -638,7 +638,7 @@ int main(int argc, char *argv[])
                 gsKit_TexManager_bind(gsGlobal, &assets[language].cred);
                 gsKit_prim_sprite_texture(
                     gsGlobal,
-                    &assets
+                    &assets[language].cred,
                     0.0f, 0.0f,
                     0.0f, 0.0f,
                     (float)gsGlobal->Width,
