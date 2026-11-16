@@ -31,6 +31,7 @@ static const ButtonPos buttonPos[MENU_COUNT] = {
 #define SCREEN_MENU    0
 #define SCREEN_OPTIONS 1
 #define SCREEN_CREDITS 2
+#define SCREEN_MULTI   3
 
 /* Linhas da tela de opções. */
 #define OPT_BRIGHT  0
@@ -51,6 +52,14 @@ static const ButtonPos buttonPos[MENU_COUNT] = {
 
 static const float optCenterY[OPT_ROWS] = {150.0f, 204.0f, 258.0f, 312.0f, 366.0f};
 
+/* Tela de multiplayer: 2, 3 e 4 jogadores (imagem 640x448). */
+#define MULTI_ROWS     3
+#define MULTI_ROW_X1   120.0f
+#define MULTI_ROW_X2   520.0f
+#define MULTI_ROW_HALF 28.0f
+
+static const float multiCenterY[MULTI_ROWS] = {170.0f, 245.0f, 320.0f};
+
 /* Textura válida: carregou e cabe nos limites da GS. */
 static int tex_ok(const GSTEXTURE *t)
 {
@@ -70,6 +79,8 @@ typedef struct {
     GSTEXTURE hl[MENU_COUNT];    int hlOk[MENU_COUNT];   /* destaques */
     GSTEXTURE opt;               int optOk;     /* tela de opções  */
     GSTEXTURE cred;              int credOk;    /* tela de créditos */
+    GSTEXTURE multi;             int multiOk;   /* tela de multiplayer */
+    GSTEXTURE dev;               int devOk;     /* aviso "em desenvolvimento" */
 } LangAssets;
 
 static LangAssets assets[LANGS];
@@ -111,6 +122,12 @@ static void load_assets(GSGLOBAL *g)
 
         snprintf(name, sizeof(name), "creditos_%s", langCode[l]);
         assets[l].credOk = load_png(g, &assets[l].cred, name);
+
+        snprintf(name, sizeof(name), "multi_%s", langCode[l]);
+        assets[l].multiOk = load_png(g, &assets[l].multi, name);
+
+        snprintf(name, sizeof(name), "dev_%s", langCode[l]);
+        assets[l].devOk = load_png(g, &assets[l].dev, name);
     }
 }
 
@@ -307,6 +324,8 @@ int main(int argc, char *argv[])
     GSGLOBAL *gsGlobal;
     int screen = SCREEN_MENU;
     int optSel = 0;
+    int multiSel = 0;       /* 0=2 jogadores, 1=3, 2=4 */
+    int devPopup = 0;       /* 1 = mostrando "em desenvolvimento" */
     int brightness = 5;     /* 0..10, 5 = original */
     int language = 0;       /* 0=português 1=inglês 2=espanhol 3=japonês */
     int musicVol = 10;      /* 0..10 */
@@ -534,6 +553,13 @@ int main(int argc, char *argv[])
                                 optSel = 0;
                                 sfx_trigger();
                             }
+                            else if (selected == 2)     /* MULTIPLAYER */
+                            {
+                                screen = SCREEN_MULTI;
+                                multiSel = 0;
+                                devPopup = 0;
+                                sfx_trigger();
+                            }
                             else if (selected == 3)     /* SAIR */
                             {
                                 if (musicFile != NULL)
@@ -616,6 +642,43 @@ int main(int argc, char *argv[])
                             sfx_trigger();
                         }
                     }
+                    else if (screen == SCREEN_MULTI)
+                    {
+                        if (devPopup)
+                        {
+                            /* Aviso aberto: X ou Círculo fecham. */
+                            if (pressedButtons & (PAD_CIRCLE | PAD_CROSS))
+                            {
+                                devPopup = 0;
+                                sfx_trigger();
+                            }
+                        }
+                        else
+                        {
+                            if (goUp)
+                            {
+                                multiSel = (multiSel + MULTI_ROWS - 1) % MULTI_ROWS;
+                                sfx_trigger();
+                            }
+                            else if (goDown)
+                            {
+                                multiSel = (multiSel + 1) % MULTI_ROWS;
+                                sfx_trigger();
+                            }
+
+                            if (pressedButtons & PAD_CROSS)
+                            {
+                                /* 2, 3 ou 4 jogadores: ainda em desenvolvimento. */
+                                devPopup = 1;
+                                sfx_trigger();
+                            }
+                            else if (pressedButtons & PAD_CIRCLE)
+                            {
+                                screen = SCREEN_MENU;
+                                sfx_trigger();
+                            }
+                        }
+                    }
                     else /* SCREEN_CREDITS */
                     {
                         if (pressedButtons & (PAD_CIRCLE | PAD_CROSS))
@@ -646,6 +709,62 @@ int main(int argc, char *argv[])
                     (float)assets[language].cred.Width,
                     (float)assets[language].cred.Height,
                     1,
+                    tint(brightness)
+                );
+            }
+        }
+        else if (screen == SCREEN_MULTI)
+        {
+            float sx = (float)gsGlobal->Width  / 640.0f;
+            float sy = (float)gsGlobal->Height / 448.0f;
+            u64 frame = GS_SETREG_RGBAQ(0xD0, 0x20, 0x20, 0x80, 0);
+            float fy1 = (multiCenterY[multiSel] - MULTI_ROW_HALF) * sy;
+            float fy2 = (multiCenterY[multiSel] + MULTI_ROW_HALF) * sy;
+            float fx1 = MULTI_ROW_X1 * sx;
+            float fx2 = MULTI_ROW_X2 * sx;
+            float t = 2.0f * sy;
+
+            if (assets[language].multiOk)
+            {
+                gsKit_TexManager_bind(gsGlobal, &assets[language].multi);
+                gsKit_prim_sprite_texture(
+                    gsGlobal,
+                    &assets[language].multi,
+                    0.0f, 0.0f,
+                    0.0f, 0.0f,
+                    (float)gsGlobal->Width,
+                    (float)gsGlobal->Height,
+                    (float)assets[language].multi.Width,
+                    (float)assets[language].multi.Height,
+                    1,
+                    tint(brightness)
+                );
+            }
+
+            /* Moldura vermelha na opção selecionada. */
+            gsKit_prim_sprite(gsGlobal, fx1, fy1, fx2, fy1 + t, 3, frame);
+            gsKit_prim_sprite(gsGlobal, fx1, fy2 - t, fx2, fy2, 3, frame);
+            gsKit_prim_sprite(gsGlobal, fx1, fy1, fx1 + t, fy2, 3, frame);
+            gsKit_prim_sprite(gsGlobal, fx2 - t, fy1, fx2, fy2, 3, frame);
+
+            /* Aviso "em desenvolvimento" no centro da tela. */
+            if (devPopup && assets[language].devOk)
+            {
+                GSTEXTURE *dv = &assets[language].dev;
+                float pw = (float)dv->Width;
+                float ph = (float)dv->Height;
+                float px1 = ((640.0f - pw) / 2.0f) * sx;
+                float py1 = ((448.0f - ph) / 2.0f) * sy;
+
+                gsKit_TexManager_bind(gsGlobal, dv);
+                gsKit_prim_sprite_texture(
+                    gsGlobal,
+                    dv,
+                    px1, py1,
+                    0.0f, 0.0f,
+                    px1 + pw * sx, py1 + ph * sy,
+                    pw, ph,
+                    4,
                     tint(brightness)
                 );
             }
