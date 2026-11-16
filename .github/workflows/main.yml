@@ -43,4 +43,3 @@ jobs:
             granny.elf
             GRANNY/
           if-no-files-found: error
-          
