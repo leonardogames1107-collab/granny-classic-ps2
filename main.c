@@ -326,13 +326,14 @@ static int music_read(FILE *f, char *buf, int size, long dataStart,
 
 #define CONFIG_USB_PATH "mass:/GRANNY/config.dat"
 #define USB_ICON_SYS    "mass:/GRANNY/icon.sys"
-#define USB_ICON        "mass:/GRANNY/bastao.ico"
+#define USB_ICON        "mass:/GRANNY/bastao2.ico"
 
 #define MC_DIR      "/GRANNYCLASSIC"
 #define MC_CONFIG   "/GRANNYCLASSIC/config.dat"
 #define MC_ICON_SYS "/GRANNYCLASSIC/icon.sys"
-#define MC_ICON     "/GRANNYCLASSIC/bastao.ico"
-#define MC_ICON_OLD "/GRANNYCLASSIC/granny.ico"   /* versão antiga (quadrado) */
+#define MC_ICON     "/GRANNYCLASSIC/bastao2.ico"
+#define MC_ICON_OLD1 "/GRANNYCLASSIC/granny.ico"  /* 1ª versão (quadrado) */
+#define MC_ICON_OLD2 "/GRANNYCLASSIC/bastao.ico"  /* 2ª versão (taco pequeno) */
 
 /* Modos de abertura do PS2 (iguais aos do fileio.h). */
 #define MC_O_RDONLY 0x0001
@@ -503,8 +504,10 @@ static void mc_install_icon(void)
 
     mc_copy_from_usb(USB_ICON_SYS, MC_ICON_SYS);
 
-    /* Remove o ícone da versão anterior, se existir. */
-    mcDelete(0, 0, MC_ICON_OLD);
+    /* Remove os ícones das versões anteriores, se existirem. */
+    mcDelete(0, 0, MC_ICON_OLD1);
+    mcSync(0, NULL, &r);
+    mcDelete(0, 0, MC_ICON_OLD2);
     mcSync(0, NULL, &r);
 }
 
