@@ -1,0 +1,47 @@
+name: Granny Classic PS2 Build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: ps2dev/ps2dev:latest
+
+    steps:
+      - name: Baixar projeto
+        uses: actions/checkout@v4
+
+      - name: Instalar Make
+        run: |
+          apk update
+          apk add make binutils pkgconf
+
+      - name: Compilar jogo
+        run: make
+
+      - name: Montar pasta GRANNY para o pendrive
+        run: |
+          mkdir -p GRANNY
+          cp "$PS2SDK/iop/irx/audsrv.irx" GRANNY/
+          cp menu_??.png GRANNY/
+          cp destaque_??_*.png GRANNY/
+          cp opcoes_??.png GRANNY/
+          cp creditos_??.png GRANNY/
+          cp multi_??.png GRANNY/
+          cp dev_??.png GRANNY/
+          cp musica_menu.wav GRANNY/
+          cp som_cursor.wav GRANNY/
+          cp icon.sys GRANNY/
+          cp granny.ico GRANNY/
+          ls -l GRANNY
+
+      - name: Enviar tudo pronto para copiar no pendrive
+        uses: actions/upload-artifact@v4
+        with:
+          name: Granny-Classic-PS2
+          path: |
+            granny.elf
+            GRANNY/
+          if-no-files-found: error
