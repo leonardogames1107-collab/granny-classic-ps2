@@ -34,7 +34,7 @@ jobs:
           cp musica_menu.wav GRANNY/
           cp som_cursor.wav GRANNY/
           cp icon.sys GRANNY/
-          cp granny.ico GRANNY/
+          cp bastao.ico GRANNY/
           ls -l GRANNY
 
       - name: Enviar tudo pronto para copiar no pendrive
