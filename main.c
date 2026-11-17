@@ -7,6 +7,7 @@
 #include <sifrpc.h>
 #include <loadfile.h>
 #include <audsrv.h>
+#include <libmc.h>
 #include <string.h>
 
 static unsigned char padBuf[256] __attribute__((aligned(64)));
@@ -319,6 +320,263 @@ static int music_read(FILE *f, char *buf, int size, long dataStart,
     return got;
 }
 
+/* ---------- Configurações: memory card (principal) e pendrive (reserva) ---------- */
+#define CONFIG_SIZE    10
+#define CONFIG_VERSION 1
+
+#define CONFIG_USB_PATH "mass:/GRANNY/config.dat"
+#define USB_ICON_SYS    "mass:/GRANNY/icon.sys"
+#define USB_ICON        "mass:/GRANNY/granny.ico"
+
+#define MC_DIR      "/GRANNYCLASSIC"
+#define MC_CONFIG   "/GRANNYCLASSIC/config.dat"
+#define MC_ICON_SYS "/GRANNYCLASSIC/icon.sys"
+#define MC_ICON     "/GRANNYCLASSIC/granny.ico"
+
+/* Modos de abertura do PS2 (iguais aos do fileio.h). */
+#define MC_O_RDONLY 0x0001
+#define MC_O_WRONLY 0x0002
+#define MC_O_CREAT  0x0200
+#define MC_O_TRUNC  0x0400
+
+static int mcReady = 0;
+static unsigned char mcBuf[2048] __attribute__((aligned(64)));
+
+/* Formato (10 bytes): "GRNY", versão, brilho, idioma, música, base, soma. */
+static unsigned char config_sum(const unsigned char *b)
+{
+    unsigned sum = 0;
+    int i;
+
+    for (i = 0; i < CONFIG_SIZE - 1; i++)
+        sum += b[i];
+
+    return (unsigned char)(sum & 0xFF);
+}
+
+static void config_pack(unsigned char *b, int brightness, int language,
+                        int musicVol, int masterVol)
+{
+    memcpy(b, "GRNY", 4);
+    b[4] = CONFIG_VERSION;
+    b[5] = (unsigned char)brightness;
+    b[6] = (unsigned char)language;
+    b[7] = (unsigned char)musicVol;
+    b[8] = (unsigned char)masterVol;
+    b[9] = config_sum(b);
+}
+
+static int config_unpack(const unsigned char *b, int *brightness,
+                         int *language, int *musicVol, int *masterVol)
+{
+    if (memcmp(b, "GRNY", 4) != 0 || b[4] != CONFIG_VERSION)
+        return 0;
+    if (b[CONFIG_SIZE - 1] != config_sum(b))
+        return 0;
+    if (b[5] > 10 || b[6] >= LANGS || b[7] > 10 || b[8] > 10)
+        return 0;
+
+    *brightness = b[5];
+    *language   = b[6];
+    *musicVol   = b[7];
+    *masterVol  = b[8];
+    return 1;
+}
+
+/* Inicia o memory card (slot 1). Devolve 1 se há um cartão de PS2 pronto. */
+static int mc_start(void)
+{
+    int type = 0, freeBlocks = 0, format = 0, ret = -1;
+
+    if (mcInit(MC_TYPE_XMC) < 0)
+    {
+        SifLoadModule("rom0:XSIO2MAN", 0, NULL);
+        SifLoadModule("rom0:XMCMAN", 0, NULL);
+        SifLoadModule("rom0:XMCSERV", 0, NULL);
+
+        if (mcInit(MC_TYPE_XMC) < 0)
+            return 0;
+    }
+
+    mcGetInfo(0, 0, &type, &freeBlocks, &format);
+    mcSync(0, NULL, &ret);
+
+    /* ret >= -1: cartão presente; tipo 2 = cartão de PlayStation 2 */
+    return (ret >= -1 && type == 2);
+}
+
+static int mc_exists(const char *path)
+{
+    int fd = -1, res = 0;
+
+    mcOpen(0, 0, path, MC_O_RDONLY);
+    mcSync(0, NULL, &fd);
+
+    if (fd < 0)
+        return 0;
+
+    mcClose(fd);
+    mcSync(0, NULL, &res);
+    return 1;
+}
+
+static int mc_write_file(const char *path, const void *data, int size)
+{
+    int fd = -1, res = -1, r2 = 0;
+
+    if (size > (int)sizeof(mcBuf))
+        return 0;
+
+    memcpy(mcBuf, data, (size_t)size);
+
+    mcOpen(0, 0, path, MC_O_WRONLY | MC_O_CREAT | MC_O_TRUNC);
+    mcSync(0, NULL, &fd);
+
+    if (fd < 0)
+        return 0;
+
+    mcWrite(fd, mcBuf, size);
+    mcSync(0, NULL, &res);
+    mcClose(fd);
+    mcSync(0, NULL, &r2);
+
+    return res == size;
+}
+
+/* Copia um arquivo do pendrive para o memory card (usado só no ícone). */
+static int mc_copy_from_usb(const char *usbPath, const char *mcPath)
+{
+    FILE *f = fopen(usbPath, "rb");
+    int fd = -1, res = -1, r2 = 0, ok = 1;
+    size_t n;
+
+    if (f == NULL)
+        return 0;
+
+    mcOpen(0, 0, mcPath, MC_O_WRONLY | MC_O_CREAT | MC_O_TRUNC);
+    mcSync(0, NULL, &fd);
+
+    if (fd < 0)
+    {
+        fclose(f);
+        return 0;
+    }
+
+    while ((n = fread(mcBuf, 1, sizeof(mcBuf), f)) > 0)
+    {
+        mcWrite(fd, mcBuf, (int)n);
+        mcSync(0, NULL, &res);
+
+        if (res != (int)n)
+        {
+            ok = 0;
+            break;
+        }
+    }
+
+    mcClose(fd);
+    mcSync(0, NULL, &r2);
+    fclose(f);
+
+    if (!ok)
+    {
+        mcDelete(0, 0, mcPath);      /* não deixa arquivo pela metade */
+        mcSync(0, NULL, &r2);
+    }
+
+    return ok;
+}
+
+/* Instala o ícone (bastão com sangue) no save. O icon.sys vai por último,
+   assim a pasta só aparece no navegador do PS2 com o ícone completo. */
+static void mc_install_icon(void)
+{
+    if (!mc_exists(MC_ICON))
+        mc_copy_from_usb(USB_ICON, MC_ICON);
+
+    if (mc_exists(MC_ICON) && !mc_exists(MC_ICON_SYS))
+        mc_copy_from_usb(USB_ICON_SYS, MC_ICON_SYS);
+}
+
+static int config_load(int *brightness, int *language,
+                       int *musicVol, int *masterVol)
+{
+    unsigned char b[CONFIG_SIZE];
+    int fd = -1, res = -1, r2 = 0;
+    size_t n;
+    FILE *f;
+
+    /* 1) memory card */
+    if (mcReady)
+    {
+        mcOpen(0, 0, MC_CONFIG, MC_O_RDONLY);
+        mcSync(0, NULL, &fd);
+
+        if (fd >= 0)
+        {
+            mcRead(fd, mcBuf, CONFIG_SIZE);
+            mcSync(0, NULL, &res);
+            mcClose(fd);
+            mcSync(0, NULL, &r2);
+
+            if (res == CONFIG_SIZE)
+            {
+                memcpy(b, mcBuf, CONFIG_SIZE);
+
+                if (config_unpack(b, brightness, language, musicVol, masterVol))
+                    return 1;
+            }
+        }
+    }
+
+    /* 2) reserva: pendrive */
+    f = fopen(CONFIG_USB_PATH, "rb");
+    if (f != NULL)
+    {
+        n = fread(b, 1, CONFIG_SIZE, f);
+        fclose(f);
+
+        if (n == CONFIG_SIZE &&
+            config_unpack(b, brightness, language, musicVol, masterVol))
+            return 1;
+    }
+
+    return 0;
+}
+
+static int config_save(int brightness, int language,
+                       int musicVol, int masterVol)
+{
+    unsigned char b[CONFIG_SIZE];
+    int r = 0;
+    FILE *f;
+    size_t n;
+
+    config_pack(b, brightness, language, musicVol, masterVol);
+
+    /* 1) memory card (com o ícone do bastão) */
+    if (mcReady)
+    {
+        mcMkDir(0, 0, MC_DIR);
+        mcSync(0, NULL, &r);          /* se a pasta já existe, tudo bem */
+
+        mc_install_icon();
+
+        if (mc_write_file(MC_CONFIG, b, CONFIG_SIZE))
+            return 1;
+    }
+
+    /* 2) reserva: pendrive */
+    f = fopen(CONFIG_USB_PATH, "wb");
+    if (f == NULL)
+        return 0;
+
+    n = fwrite(b, 1, CONFIG_SIZE, f);
+    fclose(f);
+
+    return n == CONFIG_SIZE;
+}
+
 int main(int argc, char *argv[])
 {
     GSGLOBAL *gsGlobal;
@@ -330,6 +588,7 @@ int main(int argc, char *argv[])
     int language = 0;       /* 0=português 1=inglês 2=espanhol 3=japonês */
     int musicVol = 10;      /* 0..10 */
     int masterVol = 10;     /* 0..10 (volume base) */
+    int cfgDirty = 0;       /* 1 = mudou algo e ainda não foi salvo */
 
     int selected = 0;
     int padOpened = 0;
@@ -360,6 +619,12 @@ int main(int argc, char *argv[])
 
     /* RPC antes de qualquer acesso a arquivo ou módulo. */
     sceSifInitRpc(0);
+
+    /* Memory card (save principal) e configurações salvas. */
+    mcReady = mc_start();
+
+    if (config_load(&brightness, &language, &musicVol, &masterVol))
+        set_volumes(musicVol, masterVol);
 
     gsGlobal = gsKit_init_global();
 
@@ -597,6 +862,9 @@ int main(int argc, char *argv[])
                         {
                             int d = goRight ? 1 : -1;
 
+                            if (optSel != OPT_CREDITS)
+                                cfgDirty = 1;
+
                             if (optSel == OPT_BRIGHT)
                             {
                                 brightness += d;
@@ -633,11 +901,19 @@ int main(int argc, char *argv[])
                         else if ((pressedButtons & PAD_CROSS) && optSel == OPT_LANG)
                         {
                             language = (language + 1) % LANGS;
+                            cfgDirty = 1;
                             sfx_trigger();
                         }
 
                         if (pressedButtons & PAD_CIRCLE)
                         {
+                            if (cfgDirty)
+                            {
+                                config_save(brightness, language,
+                                            musicVol, masterVol);
+                                cfgDirty = 0;
+                            }
+
                             screen = SCREEN_MENU;
                             sfx_trigger();
                         }
