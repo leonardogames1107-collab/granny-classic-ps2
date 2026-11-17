@@ -326,12 +326,13 @@ static int music_read(FILE *f, char *buf, int size, long dataStart,
 
 #define CONFIG_USB_PATH "mass:/GRANNY/config.dat"
 #define USB_ICON_SYS    "mass:/GRANNY/icon.sys"
-#define USB_ICON        "mass:/GRANNY/granny.ico"
+#define USB_ICON        "mass:/GRANNY/bastao.ico"
 
 #define MC_DIR      "/GRANNYCLASSIC"
 #define MC_CONFIG   "/GRANNYCLASSIC/config.dat"
 #define MC_ICON_SYS "/GRANNYCLASSIC/icon.sys"
-#define MC_ICON     "/GRANNYCLASSIC/granny.ico"
+#define MC_ICON     "/GRANNYCLASSIC/bastao.ico"
+#define MC_ICON_OLD "/GRANNYCLASSIC/granny.ico"   /* versão antiga (quadrado) */
 
 /* Modos de abertura do PS2 (iguais aos do fileio.h). */
 #define MC_O_RDONLY 0x0001
@@ -491,11 +492,20 @@ static int mc_copy_from_usb(const char *usbPath, const char *mcPath)
    assim a pasta só aparece no navegador do PS2 com o ícone completo. */
 static void mc_install_icon(void)
 {
-    if (!mc_exists(MC_ICON))
-        mc_copy_from_usb(USB_ICON, MC_ICON);
+    int r = 0;
 
-    if (mc_exists(MC_ICON) && !mc_exists(MC_ICON_SYS))
-        mc_copy_from_usb(USB_ICON_SYS, MC_ICON_SYS);
+    if (mc_exists(MC_ICON) && mc_exists(MC_ICON_SYS))
+        return;                              /* já instalado */
+
+    /* Ícone novo primeiro; depois a ficha (icon.sys), sobrescrevendo a antiga. */
+    if (!mc_exists(MC_ICON) && !mc_copy_from_usb(USB_ICON, MC_ICON))
+        return;
+
+    mc_copy_from_usb(USB_ICON_SYS, MC_ICON_SYS);
+
+    /* Remove o ícone da versão anterior, se existir. */
+    mcDelete(0, 0, MC_ICON_OLD);
+    mcSync(0, NULL, &r);
 }
 
 static int config_load(int *brightness, int *language,
