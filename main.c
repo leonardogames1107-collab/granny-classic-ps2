@@ -33,6 +33,7 @@ static const ButtonPos buttonPos[MENU_COUNT] = {
 #define SCREEN_OPTIONS 1
 #define SCREEN_CREDITS 2
 #define SCREEN_MULTI   3
+#define SCREEN_PLAY    4
 
 /* Linhas da tela de opções. */
 #define OPT_BRIGHT  0
@@ -61,6 +62,44 @@ static const float optCenterY[OPT_ROWS] = {150.0f, 204.0f, 258.0f, 312.0f, 366.0
 
 static const float multiCenterY[MULTI_ROWS] = {170.0f, 245.0f, 320.0f};
 
+/* ---------- Tela de JOGAR (configuração da partida) ---------- */
+#define DIFFS 5
+
+/* Opções definidas pela dificuldade (travadas):
+   escuro, cadeados extras, mancando, música. */
+static const unsigned char diffPreset[DIFFS][4] = {
+    {0, 0, 1, 1},   /* Fácil   */
+    {0, 0, 0, 1},   /* Normal  */
+    {1, 1, 0, 1},   /* Difícil */
+    {1, 1, 0, 0},   /* Extremo */
+    {0, 0, 0, 1}    /* Prática (a Granny não aparece) */
+};
+
+enum { PI_DIFF, PI_GSKIN, PI_PSKIN, PI_ACH, PI_BACK, PI_SAVE, PI_CONT, PI_COUNT };
+
+/* Retângulos dos itens (x1, y1, x2, y2) na imagem 640x448. */
+static const float playRect[PI_COUNT][4] = {
+    { 24.0f, 186.0f, 156.0f, 218.0f},   /* dificuldade           */
+    {190.0f,  56.0f, 254.0f, 120.0f},   /* skins da Granny       */
+    {270.0f,  56.0f, 334.0f, 120.0f},   /* skins do jogador      */
+    {540.0f,  40.0f, 612.0f, 112.0f},   /* conquistas            */
+    { 24.0f, 318.0f, 134.0f, 352.0f},   /* voltar                */
+    { 24.0f, 366.0f, 134.0f, 400.0f},   /* salvar                */
+    {500.0f, 318.0f, 616.0f, 352.0f}    /* continuar             */
+};
+
+/* Navegação: cima, baixo, esquerda, direita.
+   -1 = fica onde está; -2 = ajusta a dificuldade. */
+static const signed char playNav[PI_COUNT][4] = {
+    /* DIFF  */ {PI_GSKIN, PI_BACK, -2, -2},
+    /* GSKIN */ {-1, PI_DIFF, PI_DIFF, PI_PSKIN},
+    /* PSKIN */ {-1, PI_DIFF, PI_GSKIN, PI_ACH},
+    /* ACH   */ {-1, PI_CONT, PI_PSKIN, -1},
+    /* BACK  */ {PI_DIFF, PI_SAVE, -1, PI_CONT},
+    /* SAVE  */ {PI_BACK, -1, -1, PI_CONT},
+    /* CONT  */ {PI_ACH, -1, PI_BACK, -1}
+};
+
 /* Textura válida: carregou e cabe nos limites da GS. */
 static int tex_ok(const GSTEXTURE *t)
 {
@@ -82,6 +121,8 @@ typedef struct {
     GSTEXTURE cred;              int credOk;    /* tela de créditos */
     GSTEXTURE multi;             int multiOk;   /* tela de multiplayer */
     GSTEXTURE dev;               int devOk;     /* aviso "em desenvolvimento" */
+    GSTEXTURE play;              int playOk;    /* tela de JOGAR (fundo) */
+    GSTEXTURE atlas;             int atlasOk;   /* dificuldades, avisos de save */
 } LangAssets;
 
 static LangAssets assets[LANGS];
@@ -129,6 +170,12 @@ static void load_assets(GSGLOBAL *g)
 
         snprintf(name, sizeof(name), "dev_%s", langCode[l]);
         assets[l].devOk = load_png(g, &assets[l].dev, name);
+
+        snprintf(name, sizeof(name), "jogar_%s", langCode[l]);
+        assets[l].playOk = load_png(g, &assets[l].play, name);
+
+        snprintf(name, sizeof(name), "jogarx_%s", langCode[l]);
+        assets[l].atlasOk = load_png(g, &assets[l].atlas, name);
     }
 }
 
@@ -321,8 +368,8 @@ static int music_read(FILE *f, char *buf, int size, long dataStart,
 }
 
 /* ---------- Configurações: memory card (principal) e pendrive (reserva) ---------- */
-#define CONFIG_SIZE    10
-#define CONFIG_VERSION 1
+#define CONFIG_SIZE    26
+#define CONFIG_VERSION 2
 
 #define CONFIG_USB_PATH "mass:/GRANNY/config.dat"
 #define USB_ICON_SYS    "mass:/GRANNY/icon.sys"
@@ -344,45 +391,106 @@ static int music_read(FILE *f, char *buf, int size, long dataStart,
 static int mcReady = 0;
 static unsigned char mcBuf[2048] __attribute__((aligned(64)));
 
-/* Formato (10 bytes): "GRNY", versão, brilho, idioma, música, base, soma. */
-static unsigned char config_sum(const unsigned char *b)
+/* Dados salvos: preferências + dados da partida (dificuldade, skins, conquistas). */
+typedef struct {
+    int brightness, language, musicVol, masterVol;
+    int difficulty, grannySkin, playerSkin;
+    unsigned int grannyUnlocked, playerUnlocked, achievements;
+} SaveData;
+
+static void save_defaults(SaveData *d)
+{
+    d->brightness = 5;  d->language = 0;
+    d->musicVol = 10;   d->masterVol = 10;
+    d->difficulty = 1;  d->grannySkin = 0;  d->playerSkin = 0;
+    d->grannyUnlocked = 1;  d->playerUnlocked = 1;  d->achievements = 0;
+}
+
+/* Formato v2 (26 bytes): "GRNY", versão, brilho, idioma, música, base,
+   dificuldade, skin da Granny, skin do jogador, skins liberadas da Granny
+   (4 bytes), skins liberadas do jogador (4), conquistas (4), reservado, soma.
+   O formato v1 (10 bytes, só as preferências) ainda é lido. */
+static unsigned char config_sum(const unsigned char *b, int n)
 {
     unsigned sum = 0;
     int i;
 
-    for (i = 0; i < CONFIG_SIZE - 1; i++)
+    for (i = 0; i < n - 1; i++)
         sum += b[i];
 
     return (unsigned char)(sum & 0xFF);
 }
 
-static void config_pack(unsigned char *b, int brightness, int language,
-                        int musicVol, int masterVol)
+static void put32(unsigned char *p, unsigned int v)
 {
-    memcpy(b, "GRNY", 4);
-    b[4] = CONFIG_VERSION;
-    b[5] = (unsigned char)brightness;
-    b[6] = (unsigned char)language;
-    b[7] = (unsigned char)musicVol;
-    b[8] = (unsigned char)masterVol;
-    b[9] = config_sum(b);
+    p[0] = (unsigned char)(v & 0xFF);
+    p[1] = (unsigned char)((v >> 8) & 0xFF);
+    p[2] = (unsigned char)((v >> 16) & 0xFF);
+    p[3] = (unsigned char)((v >> 24) & 0xFF);
 }
 
-static int config_unpack(const unsigned char *b, int *brightness,
-                         int *language, int *musicVol, int *masterVol)
+static unsigned int get32(const unsigned char *p)
 {
-    if (memcmp(b, "GRNY", 4) != 0 || b[4] != CONFIG_VERSION)
+    return (unsigned int)p[0] | ((unsigned int)p[1] << 8) |
+           ((unsigned int)p[2] << 16) | ((unsigned int)p[3] << 24);
+}
+
+static void config_pack(unsigned char *b, const SaveData *d)
+{
+    memset(b, 0, CONFIG_SIZE);
+    memcpy(b, "GRNY", 4);
+    b[4]  = CONFIG_VERSION;
+    b[5]  = (unsigned char)d->brightness;
+    b[6]  = (unsigned char)d->language;
+    b[7]  = (unsigned char)d->musicVol;
+    b[8]  = (unsigned char)d->masterVol;
+    b[9]  = (unsigned char)d->difficulty;
+    b[10] = (unsigned char)d->grannySkin;
+    b[11] = (unsigned char)d->playerSkin;
+    put32(b + 12, d->grannyUnlocked);
+    put32(b + 16, d->playerUnlocked);
+    put32(b + 20, d->achievements);
+    b[CONFIG_SIZE - 1] = config_sum(b, CONFIG_SIZE);
+}
+
+/* d já deve estar com os valores padrão; só é alterado se o save for válido. */
+static int config_unpack(const unsigned char *b, int n, SaveData *d)
+{
+    if (n < 10 || memcmp(b, "GRNY", 4) != 0)
         return 0;
-    if (b[CONFIG_SIZE - 1] != config_sum(b))
+    if (b[n - 1] != config_sum(b, n))
         return 0;
     if (b[5] > 10 || b[6] >= LANGS || b[7] > 10 || b[8] > 10)
         return 0;
 
-    *brightness = b[5];
-    *language   = b[6];
-    *musicVol   = b[7];
-    *masterVol  = b[8];
-    return 1;
+    if (b[4] == 1 && n == 10)                 /* save antigo */
+    {
+        d->brightness = b[5];
+        d->language   = b[6];
+        d->musicVol   = b[7];
+        d->masterVol  = b[8];
+        return 1;
+    }
+
+    if (b[4] == CONFIG_VERSION && n == CONFIG_SIZE)
+    {
+        if (b[9] >= DIFFS || b[10] >= 32 || b[11] >= 32)
+            return 0;
+
+        d->brightness = b[5];
+        d->language   = b[6];
+        d->musicVol   = b[7];
+        d->masterVol  = b[8];
+        d->difficulty = b[9];
+        d->grannySkin = b[10];
+        d->playerSkin = b[11];
+        d->grannyUnlocked = get32(b + 12);
+        d->playerUnlocked = get32(b + 16);
+        d->achievements   = get32(b + 20);
+        return 1;
+    }
+
+    return 0;
 }
 
 /* Inicia o memory card (slot 1). Devolve 1 se há um cartão de PS2 pronto. */
@@ -511,8 +619,7 @@ static void mc_install_icon(void)
     mcSync(0, NULL, &r);
 }
 
-static int config_load(int *brightness, int *language,
-                       int *musicVol, int *masterVol)
+static int config_load(SaveData *d)
 {
     unsigned char b[CONFIG_SIZE];
     int fd = -1, res = -1, r2 = 0;
@@ -532,11 +639,11 @@ static int config_load(int *brightness, int *language,
             mcClose(fd);
             mcSync(0, NULL, &r2);
 
-            if (res == CONFIG_SIZE)
+            if (res >= 10 && res <= CONFIG_SIZE)
             {
-                memcpy(b, mcBuf, CONFIG_SIZE);
+                memcpy(b, mcBuf, (size_t)res);
 
-                if (config_unpack(b, brightness, language, musicVol, masterVol))
+                if (config_unpack(b, res, d))
                     return 1;
             }
         }
@@ -549,25 +656,23 @@ static int config_load(int *brightness, int *language,
         n = fread(b, 1, CONFIG_SIZE, f);
         fclose(f);
 
-        if (n == CONFIG_SIZE &&
-            config_unpack(b, brightness, language, musicVol, masterVol))
+        if (n >= 10 && config_unpack(b, (int)n, d))
             return 1;
     }
 
     return 0;
 }
 
-static int config_save(int brightness, int language,
-                       int musicVol, int masterVol)
+static int config_save(const SaveData *d)
 {
     unsigned char b[CONFIG_SIZE];
     int r = 0;
     FILE *f;
     size_t n;
 
-    config_pack(b, brightness, language, musicVol, masterVol);
+    config_pack(b, d);
 
-    /* 1) memory card (com o ícone do bastão) */
+    /* 1) memory card (com o ícone do taco) */
     if (mcReady)
     {
         mcMkDir(0, 0, MC_DIR);
@@ -590,6 +695,22 @@ static int config_save(int brightness, int language,
     return n == CONFIG_SIZE;
 }
 
+/* Desenha um pedaço (u, v, w, h em texels) de uma imagem na posição x, y
+   (coordenadas da tela 640x448). */
+static void draw_sub(GSGLOBAL *g, GSTEXTURE *t, float x, float y,
+                     float w, float h, float u, float v, u64 color, int z)
+{
+    float sx = (float)g->Width  / 640.0f;
+    float sy = (float)g->Height / 448.0f;
+
+    gsKit_TexManager_bind(g, t);
+    gsKit_prim_sprite_texture(
+        g, t,
+        x * sx, y * sy, u, v,
+        (x + w) * sx, (y + h) * sy, u + w, v + h,
+        z, color);
+}
+
 int main(int argc, char *argv[])
 {
     GSGLOBAL *gsGlobal;
@@ -597,10 +718,9 @@ int main(int argc, char *argv[])
     int optSel = 0;
     int multiSel = 0;       /* 0=2 jogadores, 1=3, 2=4 */
     int devPopup = 0;       /* 1 = mostrando "em desenvolvimento" */
-    int brightness = 5;     /* 0..10, 5 = original */
-    int language = 0;       /* 0=português 1=inglês 2=espanhol 3=japonês */
-    int musicVol = 10;      /* 0..10 */
-    int masterVol = 10;     /* 0..10 (volume base) */
+    SaveData sd;            /* preferências + dados da partida */
+    int playSel = PI_DIFF;  /* item selecionado na tela de JOGAR */
+    int playPopup = 0;      /* 1 = em desenvolvimento, 2 = salvo, 3 = falha */
     int cfgDirty = 0;       /* 1 = mudou algo e ainda não foi salvo */
 
     int selected = 0;
@@ -633,11 +753,11 @@ int main(int argc, char *argv[])
     /* RPC antes de qualquer acesso a arquivo ou módulo. */
     sceSifInitRpc(0);
 
-    /* Memory card (save principal) e configurações salvas. */
+    /* Memory card (save principal) e dados salvos. */
+    save_defaults(&sd);
     mcReady = mc_start();
-
-    if (config_load(&brightness, &language, &musicVol, &masterVol))
-        set_volumes(musicVol, masterVol);
+    config_load(&sd);
+    set_volumes(sd.musicVol, sd.masterVol);
 
     gsGlobal = gsKit_init_global();
 
@@ -825,7 +945,14 @@ int main(int argc, char *argv[])
 
                         if (pressedButtons & PAD_CROSS)
                         {
-                            if (selected == 1)          /* OPÇÕES */
+                            if (selected == 0)          /* JOGAR */
+                            {
+                                screen = SCREEN_PLAY;
+                                playSel = PI_DIFF;
+                                playPopup = 0;
+                                sfx_trigger();
+                            }
+                            else if (selected == 1)     /* OPÇÕES */
                             {
                                 screen = SCREEN_OPTIONS;
                                 optSel = 0;
@@ -880,28 +1007,28 @@ int main(int argc, char *argv[])
 
                             if (optSel == OPT_BRIGHT)
                             {
-                                brightness += d;
-                                if (brightness < 0)  brightness = 0;
-                                if (brightness > 10) brightness = 10;
+                                sd.brightness += d;
+                                if (sd.brightness < 0)  sd.brightness = 0;
+                                if (sd.brightness > 10) sd.brightness = 10;
                             }
                             else if (optSel == OPT_LANG)
                             {
-                                language = (language + d + LANGS) % LANGS;
+                                sd.language = (sd.language + d + LANGS) % LANGS;
                                 sfx_trigger();
                             }
                             else if (optSel == OPT_MUSIC)
                             {
-                                musicVol += d;
-                                if (musicVol < 0)  musicVol = 0;
-                                if (musicVol > 10) musicVol = 10;
-                                set_volumes(musicVol, masterVol);
+                                sd.musicVol += d;
+                                if (sd.musicVol < 0)  sd.musicVol = 0;
+                                if (sd.musicVol > 10) sd.musicVol = 10;
+                                set_volumes(sd.musicVol, sd.masterVol);
                             }
                             else if (optSel == OPT_MASTER)
                             {
-                                masterVol += d;
-                                if (masterVol < 0)  masterVol = 0;
-                                if (masterVol > 10) masterVol = 10;
-                                set_volumes(musicVol, masterVol);
+                                sd.masterVol += d;
+                                if (sd.masterVol < 0)  sd.masterVol = 0;
+                                if (sd.masterVol > 10) sd.masterVol = 10;
+                                set_volumes(sd.musicVol, sd.masterVol);
                                 sfx_trigger();   /* prévia do volume */
                             }
                         }
@@ -913,7 +1040,7 @@ int main(int argc, char *argv[])
                         }
                         else if ((pressedButtons & PAD_CROSS) && optSel == OPT_LANG)
                         {
-                            language = (language + 1) % LANGS;
+                            sd.language = (sd.language + 1) % LANGS;
                             cfgDirty = 1;
                             sfx_trigger();
                         }
@@ -922,13 +1049,76 @@ int main(int argc, char *argv[])
                         {
                             if (cfgDirty)
                             {
-                                config_save(brightness, language,
-                                            musicVol, masterVol);
+                                config_save(&sd);
                                 cfgDirty = 0;
                             }
 
                             screen = SCREEN_MENU;
                             sfx_trigger();
+                        }
+                    }
+                    else if (screen == SCREEN_PLAY)
+                    {
+                        if (playPopup)
+                        {
+                            /* Aviso aberto: X ou Círculo fecham. */
+                            if (pressedButtons & (PAD_CIRCLE | PAD_CROSS))
+                            {
+                                playPopup = 0;
+                                sfx_trigger();
+                            }
+                        }
+                        else
+                        {
+                            int to = -1;
+
+                            if (goUp)         to = playNav[playSel][0];
+                            else if (goDown)  to = playNav[playSel][1];
+                            else if (goLeft)  to = playNav[playSel][2];
+                            else if (goRight) to = playNav[playSel][3];
+
+                            if (to == -2)               /* seletor de dificuldade */
+                            {
+                                int nd = sd.difficulty + (goRight ? 1 : -1);
+
+                                if (nd >= 0 && nd < DIFFS)
+                                {
+                                    sd.difficulty = nd;
+                                    sfx_trigger();
+                                }
+                            }
+                            else if (to >= 0)
+                            {
+                                playSel = to;
+                                sfx_trigger();
+                            }
+
+                            if (pressedButtons & PAD_CROSS)
+                            {
+                                if (playSel == PI_SAVE)
+                                {
+                                    int ok = config_save(&sd);
+
+                                    playPopup = ok ? 2 : 3;
+                                    if (ok)
+                                        cfgDirty = 0;
+                                }
+                                else if (playSel == PI_BACK)
+                                {
+                                    screen = SCREEN_MENU;
+                                }
+                                else if (playSel != PI_DIFF)
+                                {
+                                    playPopup = 1;   /* skins, conquistas, continuar */
+                                }
+
+                                sfx_trigger();
+                            }
+                            else if (pressedButtons & PAD_CIRCLE)
+                            {
+                                screen = SCREEN_MENU;
+                                sfx_trigger();
+                            }
                         }
                     }
                     else if (screen == SCREEN_MULTI)
@@ -985,21 +1175,102 @@ int main(int argc, char *argv[])
 
         if (screen == SCREEN_CREDITS)
         {
-            if (assets[language].credOk)
+            if (assets[sd.language].credOk)
             {
-                gsKit_TexManager_bind(gsGlobal, &assets[language].cred);
+                gsKit_TexManager_bind(gsGlobal, &assets[sd.language].cred);
                 gsKit_prim_sprite_texture(
                     gsGlobal,
-                    &assets[language].cred,
+                    &assets[sd.language].cred,
                     0.0f, 0.0f,
                     0.0f, 0.0f,
                     (float)gsGlobal->Width,
                     (float)gsGlobal->Height,
-                    (float)assets[language].cred.Width,
-                    (float)assets[language].cred.Height,
+                    (float)assets[sd.language].cred.Width,
+                    (float)assets[sd.language].cred.Height,
                     1,
-                    tint(brightness)
+                    tint(sd.brightness)
                 );
+            }
+        }
+        else if (screen == SCREEN_PLAY)
+        {
+            LangAssets *la = &assets[sd.language];
+            u64 col   = tint(sd.brightness);
+            u64 frame = GS_SETREG_RGBAQ(0xD0, 0x20, 0x20, 0x80, 0);
+            u64 boxOn = GS_SETREG_RGBAQ(0xB4, 0x12, 0x12, 0x80, 0);
+            float sx = (float)gsGlobal->Width  / 640.0f;
+            float sy = (float)gsGlobal->Height / 448.0f;
+            float fx1 = playRect[playSel][0] * sx;
+            float fy1 = playRect[playSel][1] * sy;
+            float fx2 = playRect[playSel][2] * sx;
+            float fy2 = playRect[playSel][3] * sy;
+            float t = 2.0f * sy;
+            int i;
+
+            if (la->playOk)
+            {
+                gsKit_TexManager_bind(gsGlobal, &la->play);
+                gsKit_prim_sprite_texture(
+                    gsGlobal,
+                    &la->play,
+                    0.0f, 0.0f,
+                    0.0f, 0.0f,
+                    (float)gsGlobal->Width,
+                    (float)gsGlobal->Height,
+                    (float)la->play.Width,
+                    (float)la->play.Height,
+                    1,
+                    col
+                );
+            }
+
+            if (la->atlasOk)
+            {
+                int dd = sd.difficulty;
+
+                /* nome da dificuldade e painel com os detalhes */
+                draw_sub(gsGlobal, &la->atlas, 26.0f, 188.0f, 128.0f, 28.0f,
+                         (float)(dd * 128), 392.0f, col, 2);
+                draw_sub(gsGlobal, &la->atlas, 176.0f, 172.0f, 320.0f, 130.0f,
+                         (float)((dd % 2) * 320), (float)((dd / 2) * 130),
+                         col, 2);
+            }
+
+            /* Caixas marcadas: definidas pela dificuldade (travadas). */
+            for (i = 0; i < 4; i++)
+            {
+                if (diffPreset[sd.difficulty][i])
+                {
+                    float cx = (i % 2 == 0) ? 383.0f : 467.0f;
+                    float cy = (i / 2 == 0) ? 64.0f : 124.0f;
+
+                    gsKit_prim_sprite(
+                        gsGlobal,
+                        (cx + 3.0f) * sx, (cy + 3.0f) * sy,
+                        (cx + 15.0f) * sx, (cy + 15.0f) * sy,
+                        2, boxOn);
+                }
+            }
+
+            /* Moldura vermelha no item selecionado. */
+            gsKit_prim_sprite(gsGlobal, fx1, fy1, fx2, fy1 + t, 3, frame);
+            gsKit_prim_sprite(gsGlobal, fx1, fy2 - t, fx2, fy2, 3, frame);
+            gsKit_prim_sprite(gsGlobal, fx1, fy1, fx1 + t, fy2, 3, frame);
+            gsKit_prim_sprite(gsGlobal, fx2 - t, fy1, fx2, fy2, 3, frame);
+
+            /* Avisos: em desenvolvimento / salvo / falha ao salvar. */
+            if (playPopup == 1 && la->devOk)
+            {
+                float pw = (float)la->dev.Width;
+                float ph = (float)la->dev.Height;
+
+                draw_sub(gsGlobal, &la->dev, (640.0f - pw) / 2.0f,
+                         (448.0f - ph) / 2.0f, pw, ph, 0.0f, 0.0f, col, 4);
+            }
+            else if ((playPopup == 2 || playPopup == 3) && la->atlasOk)
+            {
+                draw_sub(gsGlobal, &la->atlas, 160.0f, 179.0f, 320.0f, 90.0f,
+                         (playPopup == 2) ? 0.0f : 320.0f, 430.0f, col, 4);
             }
         }
         else if (screen == SCREEN_MULTI)
@@ -1013,20 +1284,20 @@ int main(int argc, char *argv[])
             float fx2 = MULTI_ROW_X2 * sx;
             float t = 2.0f * sy;
 
-            if (assets[language].multiOk)
+            if (assets[sd.language].multiOk)
             {
-                gsKit_TexManager_bind(gsGlobal, &assets[language].multi);
+                gsKit_TexManager_bind(gsGlobal, &assets[sd.language].multi);
                 gsKit_prim_sprite_texture(
                     gsGlobal,
-                    &assets[language].multi,
+                    &assets[sd.language].multi,
                     0.0f, 0.0f,
                     0.0f, 0.0f,
                     (float)gsGlobal->Width,
                     (float)gsGlobal->Height,
-                    (float)assets[language].multi.Width,
-                    (float)assets[language].multi.Height,
+                    (float)assets[sd.language].multi.Width,
+                    (float)assets[sd.language].multi.Height,
                     1,
-                    tint(brightness)
+                    tint(sd.brightness)
                 );
             }
 
@@ -1037,9 +1308,9 @@ int main(int argc, char *argv[])
             gsKit_prim_sprite(gsGlobal, fx2 - t, fy1, fx2, fy2, 3, frame);
 
             /* Aviso "em desenvolvimento" no centro da tela. */
-            if (devPopup && assets[language].devOk)
+            if (devPopup && assets[sd.language].devOk)
             {
-                GSTEXTURE *dv = &assets[language].dev;
+                GSTEXTURE *dv = &assets[sd.language].dev;
                 float pw = (float)dv->Width;
                 float ph = (float)dv->Height;
                 float px1 = ((640.0f - pw) / 2.0f) * sx;
@@ -1054,7 +1325,7 @@ int main(int argc, char *argv[])
                     px1 + pw * sx, py1 + ph * sy,
                     pw, ph,
                     4,
-                    tint(brightness)
+                    tint(sd.brightness)
                 );
             }
         }
@@ -1066,7 +1337,7 @@ int main(int argc, char *argv[])
             u64 barOff = GS_SETREG_RGBAQ(0x2A, 0x28, 0x28, 0x80, 0);
             u64 frame  = GS_SETREG_RGBAQ(0xD0, 0x20, 0x20, 0x80, 0);
             const int barRow[3] = {OPT_BRIGHT, OPT_MUSIC, OPT_MASTER};
-            const int barVal[3] = {brightness, musicVol, masterVol};
+            const int barVal[3] = {sd.brightness, sd.musicVol, sd.masterVol};
             float fy1 = (optCenterY[optSel] - OPT_ROW_HALF) * sy;
             float fy2 = (optCenterY[optSel] + OPT_ROW_HALF) * sy;
             float fx1 = OPT_ROW_X1 * sx;
@@ -1074,20 +1345,20 @@ int main(int argc, char *argv[])
             float t = 2.0f * sy;
             int r, i;
 
-            if (assets[language].optOk)
+            if (assets[sd.language].optOk)
             {
-                gsKit_TexManager_bind(gsGlobal, &assets[language].opt);
+                gsKit_TexManager_bind(gsGlobal, &assets[sd.language].opt);
                 gsKit_prim_sprite_texture(
                     gsGlobal,
-                    &assets[language].opt,
+                    &assets[sd.language].opt,
                     0.0f, 0.0f,
                     0.0f, 0.0f,
                     (float)gsGlobal->Width,
                     (float)gsGlobal->Height,
-                    (float)assets[language].opt.Width,
-                    (float)assets[language].opt.Height,
+                    (float)assets[sd.language].opt.Width,
+                    (float)assets[sd.language].opt.Height,
                     1,
-                    tint(brightness)
+                    tint(sd.brightness)
                 );
             }
 
@@ -1114,46 +1385,46 @@ int main(int argc, char *argv[])
             gsKit_prim_sprite(gsGlobal, fx1, fy1, fx1 + t, fy2, 3, frame);
             gsKit_prim_sprite(gsGlobal, fx2 - t, fy1, fx2, fy2, 3, frame);
         }
-        else if (assets[language].menuOk)
+        else if (assets[sd.language].menuOk)
         {
             /* Fatores de escala: as posições foram medidas em 640x448,
                mas o modo de vídeo pode ser PAL (640x512). */
             float sx = (float)gsGlobal->Width  / 640.0f;
             float sy = (float)gsGlobal->Height / 448.0f;
 
-            gsKit_TexManager_bind(gsGlobal, &assets[language].menu);
+            gsKit_TexManager_bind(gsGlobal, &assets[sd.language].menu);
             gsKit_prim_sprite_texture(
                 gsGlobal,
-                &assets[language].menu,
+                &assets[sd.language].menu,
                 0.0f, 0.0f,
                 0.0f, 0.0f,
                 (float)gsGlobal->Width,
                 (float)gsGlobal->Height,
-                (float)assets[language].menu.Width,
-                (float)assets[language].menu.Height,
+                (float)assets[sd.language].menu.Width,
+                (float)assets[sd.language].menu.Height,
                 1,
-                tint(brightness)
+                tint(sd.brightness)
             );
 
             /* Destaque opaco só sobre o botão selecionado. */
-            if (assets[language].hlOk[selected])
+            if (assets[sd.language].hlOk[selected])
             {
                 float x1 = buttonPos[selected].x * sx;
                 float y1 = buttonPos[selected].y * sy;
-                float x2 = x1 + (float)assets[language].hl[selected].Width  * sx;
-                float y2 = y1 + (float)assets[language].hl[selected].Height * sy;
+                float x2 = x1 + (float)assets[sd.language].hl[selected].Width  * sx;
+                float y2 = y1 + (float)assets[sd.language].hl[selected].Height * sy;
 
-                gsKit_TexManager_bind(gsGlobal, &assets[language].hl[selected]);
+                gsKit_TexManager_bind(gsGlobal, &assets[sd.language].hl[selected]);
                 gsKit_prim_sprite_texture(
                     gsGlobal,
-                    &assets[language].hl[selected],
+                    &assets[sd.language].hl[selected],
                     x1, y1,
                     0.0f, 0.0f,
                     x2, y2,
-                    (float)assets[language].hl[selected].Width,
-                    (float)assets[language].hl[selected].Height,
+                    (float)assets[sd.language].hl[selected].Width,
+                    (float)assets[sd.language].hl[selected].Height,
                     2,
-                    tint(brightness)
+                    tint(sd.brightness)
                 );
             }
         }
