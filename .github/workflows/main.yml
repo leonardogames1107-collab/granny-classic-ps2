@@ -31,6 +31,8 @@ jobs:
           cp creditos_??.png GRANNY/
           cp multi_??.png GRANNY/
           cp dev_??.png GRANNY/
+          cp jogar_??.png GRANNY/
+          cp jogarx_??.png GRANNY/
           cp musica_menu.wav GRANNY/
           cp som_cursor.wav GRANNY/
           cp icon.sys GRANNY/
