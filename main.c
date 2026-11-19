@@ -724,7 +724,8 @@ static void draw_sub(GSGLOBAL *g, GSTEXTURE *t, float x, float y,
 
 /* ---------- Abertura: vídeo (quadros PNG) + áudio ---------- */
 #define INTRO_FPS     20          /* quadros por segundo dos arquivos intro/iNNNN.png */
-#define INTRO_BG_LOAD 1           /* 1 = carrega as imagens do menu durante a abertura */
+#define INTRO_BG_LOAD 0           /* 0 = carrega o menu ANTES da abertura (seguro); 1 = em segundo plano */
+#define INTRO_FRAMES  343         /* total de quadros intro/iNNNN.png */
 #define INTRO_WAV     "mass:/GRANNY/intro.wav"
 
 static volatile int loaderDone = 0;      /* 1 = todas as imagens carregadas */
@@ -910,12 +911,20 @@ static unsigned short play_intro(GSGLOBAL *g, int audioReady, int padOpened)
                 ok[idx] = 0;
             }
 
-            if (!intro_load_frame(g, &introTex[idx], frame))
-                break;                            /* acabaram os quadros */
+            if (frame > INTRO_FRAMES)
+                break;                            /* fim do vídeo */
 
-            ok[idx] = 1;
-            cur = idx;
+            if (intro_load_frame(g, &introTex[idx], frame))
+            {
+                ok[idx] = 1;
+                cur = idx;                        /* quadro novo na tela */
+            }
+            /* se um quadro falhar, continua mostrando o anterior */
+
             shown = frame;
+
+            if (!ok[0] && !ok[1] && frame > 10)
+                break;                            /* não achou nenhum quadro: desiste */
         }
 
         gsKit_clear(g, black);
