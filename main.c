@@ -36,6 +36,7 @@ static const ButtonPos buttonPos[MENU_COUNT] = {
 #define SCREEN_CREDITS 2
 #define SCREEN_MULTI   3
 #define SCREEN_PLAY    4
+#define SCREEN_GAME    5
 
 /* Linhas da tela de opções. */
 #define OPT_BRIGHT  0
@@ -1066,6 +1067,544 @@ static int start_loader(GSGLOBAL *g, int firstLang)
 }
 #endif
 
+/* =====================================================================
+   CENA 3D (etapa 1): câmera em primeira pessoa, colisão e agachar.
+   Tudo é calculado na CPU e desenhado com triângulos coloridos (sem
+   Z-buffer, ordenados de trás para frente), para não gastar VRAM.
+   Eixos: x = leste, y = cima, z = norte. Unidade = metro.
+   ===================================================================== */
+#define G_PI          3.14159265f
+#define G_NEAR        0.10f
+#define G_MAXQ        2000
+#define G_FLUSH_TRIS  100      /* esvazia a fila de desenho a cada N triângulos (0 = nunca) */
+#define G_STAND_H     1.70f    /* altura do corpo em pé */
+#define G_CROUCH_H    0.95f    /* altura do corpo agachado */
+#define G_EYE_STAND   1.60f
+#define G_EYE_CROUCH  0.85f
+#define G_RADIUS      0.28f
+#define G_CEIL        2.60f
+
+typedef struct { float c[4][3]; float n[3]; unsigned char r, g, b, layer; } GQuad;
+typedef struct { float x0, y0, z0, x1, y1, z1; } GBox;
+typedef struct { float x, y, z, b; } GV;
+typedef struct { float key; int idx; } GSortItem;
+
+static GQuad gQuads[G_MAXQ];
+static int   gQuadN = 0;
+static GBox  gBoxes[96];
+static int   gBoxN = 0;
+static unsigned int gSeed = 12345u;
+
+/* Estado do jogador. */
+static float gPX, gPZ, gYaw, gPitch, gEye;
+static int   gCrouch = 0;
+static int   gCrouchReq = 0;
+static int   gExitReq = 0;
+static int   gSceneBuilt = 0;
+static double gTps = 0.0;
+static unsigned int gLastTick = 0;
+
+/* Controle (preenchido pelo laço principal). */
+static int gPadLX = 128, gPadLY = 128, gPadRX = 128, gPadRY = 128;
+static unsigned short gPadHeld = 0;
+
+/* ---- matemática própria (não depende da libm) ---- */
+static float g_sqrt(float x)
+{
+    union { float f; unsigned int u; } c;
+    float y;
+
+    if (x <= 0.0f)
+        return 0.0f;
+
+    c.f = x;
+    c.u = 0x1fbd1df5u + (c.u >> 1);
+    y = c.f;
+    y = 0.5f * (y + x / y);
+    y = 0.5f * (y + x / y);
+    y = 0.5f * (y + x / y);
+    return y;
+}
+
+static float g_sin(float x)
+{
+    float x2;
+
+    while (x > G_PI)  x -= 2.0f * G_PI;
+    while (x < -G_PI) x += 2.0f * G_PI;
+
+    if (x > G_PI * 0.5f)       x = G_PI - x;
+    else if (x < -G_PI * 0.5f) x = -G_PI - x;
+
+    x2 = x * x;
+    return x * (1.0f + x2 * (-1.0f / 6.0f + x2 * (1.0f / 120.0f +
+           x2 * (-1.0f / 5040.0f + x2 * (1.0f / 362880.0f)))));
+}
+
+static float g_cos(float x) { return g_sin(x + G_PI * 0.5f); }
+
+static float g_axis(int v)
+{
+    float a = ((float)v - 128.0f) / 128.0f;
+
+    if (a > -0.18f && a < 0.18f)
+        return 0.0f;
+
+    return a > 0.0f ? (a - 0.18f) / 0.82f : (a + 0.18f) / 0.82f;
+}
+
+static unsigned int g_rnd(void)
+{
+    gSeed = gSeed * 1664525u + 1013904223u;
+    return gSeed >> 8;
+}
+
+/* ---- construção do cenário ---- */
+static int g_clamp255(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+
+/* Face retangular dividida em ladrilhos (origem o, arestas u e v). */
+static void g_face(float ox, float oy, float oz,
+                   float ux, float uy, float uz,
+                   float vx, float vy, float vz,
+                   float nx, float ny, float nz,
+                   int r, int g, int b, int layer, int stain)
+{
+    float lu = g_sqrt(ux * ux + uy * uy + uz * uz);
+    float lv = g_sqrt(vx * vx + vy * vy + vz * vz);
+    int nu = (int)(lu / 1.5f) + 1;
+    int nv = (int)(lv / 1.5f) + 1;
+    int i, j, k;
+
+    for (i = 0; i < nu; i++)
+    {
+        for (j = 0; j < nv; j++)
+        {
+            GQuad *q;
+            float a0 = (float)i / nu, a1 = (float)(i + 1) / nu;
+            float b0 = (float)j / nv, b1 = (float)(j + 1) / nv;
+            int var = (int)(g_rnd() % 21u) - 10;
+            int rr = r + var, gg = g + var, bb = b + var;
+
+            if (gQuadN >= G_MAXQ)
+                return;
+
+            if (stain && (g_rnd() % 100u) < 7u)
+            {
+                rr = rr * 55 / 100 + 22;   /* mancha de sangue seco */
+                gg = gg * 30 / 100;
+                bb = bb * 30 / 100;
+            }
+
+            q = &gQuads[gQuadN++];
+            for (k = 0; k < 4; k++)
+            {
+                float aa = (k == 0 || k == 3) ? a0 : a1;
+                float bv = (k < 2) ? b0 : b1;
+
+                q->c[k][0] = ox + ux * aa + vx * bv;
+                q->c[k][1] = oy + uy * aa + vy * bv;
+                q->c[k][2] = oz + uz * aa + vz * bv;
+            }
+            q->n[0] = nx; q->n[1] = ny; q->n[2] = nz;
+            q->r = (unsigned char)g_clamp255(rr);
+            q->g = (unsigned char)g_clamp255(gg);
+            q->b = (unsigned char)g_clamp255(bb);
+            q->layer = (unsigned char)layer;
+        }
+    }
+}
+
+static void g_floor(float x0, float z0, float x1, float z1)
+{
+    g_face(x0, 0.0f, z0,  x1 - x0, 0, 0,  0, 0, z1 - z0,  0, 1, 0, 58, 44, 32, 0, 0);
+}
+
+static void g_ceiling(float x0, float z0, float x1, float z1)
+{
+    g_face(x0, G_CEIL, z0,  x1 - x0, 0, 0,  0, 0, z1 - z0,  0, -1, 0, 70, 62, 54, 0, 0);
+}
+
+/* Caixa sólida ou decorativa. Material: 0 = reboco, 1 = madeira. */
+static void g_box(float x0, float y0, float z0, float x1, float y1, float z1,
+                  int material, int solid)
+{
+    int r, g, b, stain;
+    float dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+
+    if (material == 0) { r = 150; g = 146; b = 136; stain = 1; }
+    else               { r = 84;  g = 62;  b = 44;  stain = 0; }
+
+    g_face(x0, y0, z0,  0, 0, dz,  0, dy, 0,  -1, 0, 0, r, g, b, 1, stain);   /* -x */
+    g_face(x1, y0, z0,  0, 0, dz,  0, dy, 0,   1, 0, 0, r, g, b, 1, stain);   /* +x */
+    g_face(x0, y0, z0,  dx, 0, 0,  0, dy, 0,   0, 0, -1, r, g, b, 1, stain);  /* -z */
+    g_face(x0, y0, z1,  dx, 0, 0,  0, dy, 0,   0, 0, 1, r, g, b, 1, stain);   /* +z */
+
+    if (y0 > 0.01f)
+        g_face(x0, y0, z0,  dx, 0, 0,  0, 0, dz,  0, -1, 0, r, g, b, 1, 0);   /* baixo */
+    if (y1 < G_CEIL - 0.01f)
+        g_face(x0, y1, z0,  dx, 0, 0,  0, 0, dz,  0, 1, 0, r, g, b, 1, 0);    /* topo */
+
+    if (solid && gBoxN < 96)
+    {
+        GBox *bx = &gBoxes[gBoxN++];
+        bx->x0 = x0; bx->y0 = y0; bx->z0 = z0;
+        bx->x1 = x1; bx->y1 = y1; bx->z1 = z1;
+    }
+}
+
+static void g_table(float x0, float z0, float x1, float z1, float top)
+{
+    float t = 0.08f, l = 0.10f;
+
+    g_box(x0, top - t, z0, x1, top, z1, 1, 1);
+    g_box(x0, 0, z0, x0 + l, top - t, z0 + l, 1, 1);
+    g_box(x1 - l, 0, z0, x1, top - t, z0 + l, 1, 1);
+    g_box(x0, 0, z1 - l, x0 + l, top - t, z1, 1, 1);
+    g_box(x1 - l, 0, z1 - l, x1, top - t, z1, 1, 1);
+}
+
+/* Cozinha, corredor e sala de jantar (provisório, só para testar). */
+static void g_build_scene(void)
+{
+    gQuadN = 0;
+    gBoxN = 0;
+    gSeed = 12345u;
+
+    /* chão e teto */
+    g_floor(0, 0, 6, 4);        g_ceiling(0, 0, 6, 4);
+    g_floor(6, 1.4f, 11, 2.6f); g_ceiling(6, 1.4f, 11, 2.6f);
+    g_floor(11, 0, 15, 4);      g_ceiling(11, 0, 15, 4);
+
+    /* cozinha */
+    g_box(-0.2f, 0, -0.2f, 6.2f, G_CEIL, 0,    0, 1);   /* sul   */
+    g_box(-0.2f, 0, 4,     6.2f, G_CEIL, 4.2f, 0, 1);   /* norte */
+    g_box(-0.2f, 0, 0,     0,    G_CEIL, 4,    0, 1);   /* oeste */
+    g_box(6, 0, 0,    6.2f, G_CEIL, 1.4f, 0, 1);        /* leste, lado sul da porta   */
+    g_box(6, 0, 2.6f, 6.2f, G_CEIL, 4,    0, 1);        /* leste, lado norte da porta */
+    g_box(6, 2.1f, 1.4f, 6.2f, G_CEIL, 2.6f, 0, 0);     /* verga da porta */
+
+    /* corredor */
+    g_box(6.2f, 0, 2.6f, 10.8f, G_CEIL, 2.8f, 0, 1);
+    g_box(6.2f, 0, 1.2f, 10.8f, G_CEIL, 1.4f, 0, 1);
+
+    /* sala de jantar */
+    g_box(10.8f, 0, 0,    11, G_CEIL, 1.4f, 0, 1);
+    g_box(10.8f, 0, 2.6f, 11, G_CEIL, 4,    0, 1);
+    g_box(10.8f, 2.1f, 1.4f, 11, G_CEIL, 2.6f, 0, 0);
+    g_box(10.8f, 0, -0.2f, 15.2f, G_CEIL, 0,    0, 1);
+    g_box(10.8f, 0, 4,     15.2f, G_CEIL, 4.2f, 0, 1);
+    g_box(15, 0, 0, 15.2f, G_CEIL, 4, 0, 1);
+
+    /* móveis */
+    g_box(0.3f, 0, 3.3f, 5.7f, 0.95f, 4, 1, 1);          /* balcão */
+    g_box(0.3f, 1.5f, 3.7f, 3.2f, 2.2f, 4, 1, 0);        /* armário alto (enfeite) */
+    g_table(2.0f, 1.0f, 4.2f, 1.9f, 1.12f);              /* ilha: dá para passar agachado */
+    g_table(12.2f, 1.4f, 13.8f, 2.6f, 0.78f);            /* mesa de jantar */
+    g_box(11.5f, 0, 1.6f, 11.95f, 0.5f, 2.05f, 1, 1);    /* cadeiras */
+    g_box(14.05f, 0, 1.95f, 14.5f, 0.5f, 2.4f, 1, 1);
+
+    gSceneBuilt = 1;
+}
+
+/* ---- colisão (círculo contra caixas, só no plano x-z) ---- */
+static int g_blocked(float x, float z, float h)
+{
+    int i;
+
+    for (i = 0; i < gBoxN; i++)
+    {
+        const GBox *b = &gBoxes[i];
+        float cx, cz, dx, dz;
+
+        if (b->y0 >= h)
+            continue;
+
+        cx = x < b->x0 ? b->x0 : (x > b->x1 ? b->x1 : x);
+        cz = z < b->z0 ? b->z0 : (z > b->z1 ? b->z1 : z);
+        dx = x - cx;
+        dz = z - cz;
+
+        if (dx * dx + dz * dz < G_RADIUS * G_RADIUS)
+            return 1;
+    }
+    return 0;
+}
+
+static void g_collide(float *px, float *pz, float h)
+{
+    int pass, i;
+
+    for (pass = 0; pass < 2; pass++)
+    {
+        for (i = 0; i < gBoxN; i++)
+        {
+            const GBox *b = &gBoxes[i];
+            float cx, cz, dx, dz, d2;
+
+            if (b->y0 >= h)
+                continue;
+
+            cx = *px < b->x0 ? b->x0 : (*px > b->x1 ? b->x1 : *px);
+            cz = *pz < b->z0 ? b->z0 : (*pz > b->z1 ? b->z1 : *pz);
+            dx = *px - cx;
+            dz = *pz - cz;
+            d2 = dx * dx + dz * dz;
+
+            if (d2 >= G_RADIUS * G_RADIUS)
+                continue;
+
+            if (d2 > 1.0e-8f)
+            {
+                float d = g_sqrt(d2);
+                float k = (G_RADIUS - d) / d;
+
+                *px += dx * k;
+                *pz += dz * k;
+            }
+            else
+            {
+                /* centro dentro da caixa: sai pelo lado mais curto */
+                float m = *px - b->x0;
+                float rr = b->x1 - *px, tt = *pz - b->z0, bb = b->z1 - *pz;
+                int s = 0;
+
+                if (rr < m) { m = rr; s = 1; }
+                if (tt < m) { m = tt; s = 2; }
+                if (bb < m) { m = bb; s = 3; }
+
+                if (s == 0)      *px = b->x0 - G_RADIUS;
+                else if (s == 1) *px = b->x1 + G_RADIUS;
+                else if (s == 2) *pz = b->z0 - G_RADIUS;
+                else             *pz = b->z1 + G_RADIUS;
+            }
+        }
+    }
+}
+
+static void game_start(void)
+{
+    if (!gSceneBuilt)
+        g_build_scene();
+
+    gPX = 0.9f;
+    gPZ = 2.0f;
+    gYaw = G_PI * 0.5f;      /* olhando para a porta (leste) */
+    gPitch = 0.0f;
+    gCrouch = 0;
+    gCrouchReq = 0;
+    gExitReq = 0;
+    gEye = G_EYE_STAND;
+    gLastTick = cpu_ticks_now();
+}
+
+/* Um passo da simulação (dt em segundos). */
+static void game_step(float dt)
+{
+    float fwd = -g_axis(gPadLY), str = g_axis(gPadLX);
+    float ryaw = g_axis(gPadRX), rpit = g_axis(gPadRY);
+    float fx, fz, rx, rz, vx, vz, len, speed, h, target, k;
+
+    if (gPadLX == 128 && gPadLY == 128)       /* sem analógico: direcional */
+    {
+        if (gPadHeld & PAD_UP)    fwd += 1.0f;
+        if (gPadHeld & PAD_DOWN)  fwd -= 1.0f;
+        if (gPadHeld & PAD_RIGHT) str += 1.0f;
+        if (gPadHeld & PAD_LEFT)  str -= 1.0f;
+    }
+    if (gPadHeld & PAD_R1) ryaw += 1.0f;
+    if (gPadHeld & PAD_L1) ryaw -= 1.0f;
+
+    gYaw   += ryaw * 2.6f * dt;
+    gPitch -= rpit * 1.8f * dt;
+    if (gPitch > 1.2f)  gPitch = 1.2f;
+    if (gPitch < -1.2f) gPitch = -1.2f;
+
+    /* agachar / levantar (não levanta se bater a cabeça) */
+    if (gCrouchReq)
+    {
+        gCrouchReq = 0;
+        if (!gCrouch)
+            gCrouch = 1;
+        else if (!g_blocked(gPX, gPZ, G_STAND_H))
+            gCrouch = 0;
+    }
+
+    h = gCrouch ? G_CROUCH_H : G_STAND_H;
+    speed = gCrouch ? 1.1f : 2.3f;
+
+    fx = g_sin(gYaw);  fz = g_cos(gYaw);
+    rx = g_cos(gYaw);  rz = -g_sin(gYaw);
+    vx = fx * fwd + rx * str;
+    vz = fz * fwd + rz * str;
+    len = g_sqrt(vx * vx + vz * vz);
+    if (len > 1.0f)
+    {
+        vx /= len;
+        vz /= len;
+    }
+
+    gPX += vx * speed * dt;
+    gPZ += vz * speed * dt;
+    g_collide(&gPX, &gPZ, h);
+
+    target = gCrouch ? G_EYE_CROUCH : G_EYE_STAND;
+    k = dt * 10.0f;
+    if (k > 1.0f) k = 1.0f;
+    gEye += (target - gEye) * k;
+}
+
+/* ---- desenho ---- */
+static int gcmp(const void *a, const void *b)
+{
+    float ka = ((const GSortItem *)a)->key;
+    float kb = ((const GSortItem *)b)->key;
+
+    return (ka < kb) - (ka > kb);          /* mais longe primeiro */
+}
+
+static int g_clip(const GV *in, int n, GV *out, float a, float b, float c, float d)
+{
+    int i, m = 0;
+
+    for (i = 0; i < n; i++)
+    {
+        const GV *p = &in[i];
+        const GV *q = &in[(i + 1) % n];
+        float dp = a * p->x + b * p->y + c * p->z + d;
+        float dq = a * q->x + b * q->y + c * q->z + d;
+
+        if (dp >= 0.0f)
+            out[m++] = *p;
+
+        if ((dp >= 0.0f) != (dq >= 0.0f))
+        {
+            float t = dp / (dp - dq);
+
+            out[m].x = p->x + (q->x - p->x) * t;
+            out[m].y = p->y + (q->y - p->y) * t;
+            out[m].z = p->z + (q->z - p->z) * t;
+            out[m].b = p->b + (q->b - p->b) * t;
+            m++;
+        }
+    }
+    return m;
+}
+
+static u64 g_color(const GQuad *q, float k)
+{
+    int r = (int)((float)q->r * k);
+    int g = (int)((float)q->g * k);
+    int b = (int)((float)q->b * k);
+
+    return GS_SETREG_RGBAQ(g_clamp255(r), g_clamp255(g), g_clamp255(b), 0x80, 0);
+}
+
+static void game_draw(GSGLOBAL *gs, int brightness)
+{
+    static GSortItem order[G_MAXQ];
+    float W = (float)gs->Width, H = (float)gs->Height;
+    float focal = W * 0.60f;
+    float kx = (W * 0.5f + 48.0f) / focal, ky = (H * 0.5f + 48.0f) / focal;
+    float bscale = (40.0f + 12.0f * (float)brightness) / 100.0f;
+    float sy_ = g_sin(gYaw), cy_ = g_cos(gYaw);
+    float sp = g_sin(gPitch), cp = g_cos(gPitch);
+    float Fx = sy_ * cp, Fy = sp,  Fz = cy_ * cp;       /* frente  */
+    float Rx = cy_,      Ry = 0.0f, Rz = -sy_;          /* direita */
+    float Ux = -sy_ * sp, Uy = cp,  Uz = -cy_ * sp;     /* cima    */
+    float cx = gPX, cy = gEye, cz = gPZ;
+    int i, n = 0, tris = 0;
+
+    /* 1) escolhe as faces voltadas para a câmera e mede a distância */
+    for (i = 0; i < gQuadN; i++)
+    {
+        const GQuad *q = &gQuads[i];
+        float mx = (q->c[0][0] + q->c[2][0]) * 0.5f - cx;
+        float my = (q->c[0][1] + q->c[2][1]) * 0.5f - cy;
+        float mz = (q->c[0][2] + q->c[2][2]) * 0.5f - cz;
+
+        if (mx * q->n[0] + my * q->n[1] + mz * q->n[2] >= 0.0f)
+            continue;                                   /* de costas */
+
+        if (mx * Fx + my * Fy + mz * Fz < -3.0f)
+            continue;                                   /* bem atrás de nós */
+
+        order[n].key = (float)q->layer * -100000.0f + (mx * mx + my * my + mz * mz);
+        order[n].idx = i;
+        n++;
+    }
+
+    /* camada 0 (chão/teto) sempre primeiro; depois do mais longe ao mais perto */
+    for (i = 0; i < n; i++)
+        if (gQuads[order[i].idx].layer == 0)
+            order[i].key = 1.0e9f;
+
+    qsort(order, (size_t)n, sizeof(GSortItem), gcmp);
+
+    /* 2) projeta e desenha */
+    for (i = 0; i < n; i++)
+    {
+        const GQuad *q = &gQuads[order[i].idx];
+        GV a[12], b[12];
+        float sx[12], sy[12];
+        int k, m = 4;
+
+        for (k = 0; k < 4; k++)
+        {
+            float dx = q->c[k][0] - cx, dy = q->c[k][1] - cy, dz = q->c[k][2] - cz;
+
+            a[k].x = dx * Rx + dy * Ry + dz * Rz;
+            a[k].y = dx * Ux + dy * Uy + dz * Uz;
+            a[k].z = dx * Fx + dy * Fy + dz * Fz;
+            a[k].b = bscale / (1.0f + 0.05f * (dx * dx + dy * dy + dz * dz));
+        }
+
+        m = g_clip(a, m, b, 0, 0, 1, -G_NEAR);   if (m < 3) continue;
+        m = g_clip(b, m, a, 1, 0, kx, 0);        if (m < 3) continue;
+        m = g_clip(a, m, b, -1, 0, kx, 0);       if (m < 3) continue;
+        m = g_clip(b, m, a, 0, 1, ky, 0);        if (m < 3) continue;
+        m = g_clip(a, m, b, 0, -1, ky, 0);       if (m < 3) continue;
+
+        for (k = 0; k < m; k++)
+        {
+            sx[k] = W * 0.5f + b[k].x * focal / b[k].z;
+            sy[k] = H * 0.5f - b[k].y * focal / b[k].z;
+        }
+
+        for (k = 1; k + 1 < m; k++)
+        {
+            gsKit_prim_triangle_gouraud(gs,
+                sx[0], sy[0], sx[k], sy[k], sx[k + 1], sy[k + 1], 1,
+                g_color(q, b[0].b), g_color(q, b[k].b), g_color(q, b[k + 1].b));
+
+            tris++;
+            if (G_FLUSH_TRIS > 0 && (tris % G_FLUSH_TRIS) == 0)
+                gsKit_queue_exec(gs);
+        }
+    }
+
+    /* 3) HUD: ponto central e silhueta (em pé / agachado) */
+    {
+        u64 white = GS_SETREG_RGBAQ(255, 255, 255, 0x80, 0);
+        float hx = 36.0f, hy = 52.0f;
+
+        gsKit_prim_sprite(gs, W * 0.5f - 2.0f, H * 0.5f - 2.0f,
+                              W * 0.5f + 2.0f, H * 0.5f + 2.0f, 2, white);
+
+        if (!gCrouch)
+        {
+            gsKit_prim_sprite(gs, hx - 5, hy - 22, hx + 5, hy - 12, 2, white);   /* cabeça */
+            gsKit_prim_sprite(gs, hx - 8, hy - 11, hx + 8, hy + 16, 2, white);   /* corpo  */
+            gsKit_prim_sprite(gs, hx - 7, hy + 17, hx + 7, hy + 32, 2, white);   /* pernas */
+        }
+        else
+        {
+            gsKit_prim_sprite(gs, hx - 5, hy - 8, hx + 5, hy + 2, 2, white);
+            gsKit_prim_sprite(gs, hx - 8, hy + 3, hx + 8, hy + 18, 2, white);
+            gsKit_prim_sprite(gs, hx - 9, hy + 19, hx + 9, hy + 30, 2, white);
+        }
+    }
+}
+
 int main(int argc, char *argv[])
 {
     GSGLOBAL *gsGlobal;
@@ -1311,7 +1850,16 @@ int main(int argc, char *argv[])
                         stickDown  = buttons.ljoy_v > STICK_HIGH;
                         stickLeft  = buttons.ljoy_h < STICK_LOW;
                         stickRight = buttons.ljoy_h > STICK_HIGH;
+
+                        gPadLX = buttons.ljoy_h;  gPadLY = buttons.ljoy_v;
+                        gPadRX = buttons.rjoy_h;  gPadRY = buttons.rjoy_v;
                     }
+                    else
+                    {
+                        gPadLX = gPadLY = gPadRX = gPadRY = 128;
+                    }
+
+                    gPadHeld = currentButtons;
 
                     /* Um movimento por empurrão, igual aos direcionais. */
                     int goUp    = (pressedButtons & PAD_UP) ||
@@ -1506,12 +2054,26 @@ int main(int argc, char *argv[])
                                 {
                                     screen = SCREEN_MENU;
                                 }
+                                else if (playSel == PI_CONT)
+                                {
+                                    /* Continuar: entra na cena 3D. */
+                                    if (gTps <= 0.0)
+                                    {
+                                        set_volumes(0, sd.masterVol);
+                                        gTps = measure_tick_rate(gsGlobal, black,
+                                                   (gsGlobal->Height >= 512) ? 50.0 : 59.94);
+                                    }
+                                    set_volumes(0, sd.masterVol);   /* sem música na cena */
+                                    game_start();
+                                    screen = SCREEN_GAME;
+                                }
                                 else if (playSel != PI_DIFF)
                                 {
-                                    playPopup = 1;   /* skins, conquistas, continuar */
+                                    playPopup = 1;   /* skins e conquistas */
                                 }
 
-                                sfx_trigger();
+                                if (screen != SCREEN_GAME)
+                                    sfx_trigger();
                             }
                             else if (pressedButtons & PAD_CIRCLE)
                             {
@@ -1557,6 +2119,14 @@ int main(int argc, char *argv[])
                             }
                         }
                     }
+                    else if (screen == SCREEN_GAME)
+                    {
+                        if (pressedButtons & PAD_CIRCLE)
+                            gCrouchReq = 1;
+
+                        if (pressedButtons & PAD_START)
+                            gExitReq = 1;
+                    }
                     else /* SCREEN_CREDITS */
                     {
                         if (pressedButtons & (PAD_CIRCLE | PAD_CROSS))
@@ -1589,6 +2159,27 @@ int main(int argc, char *argv[])
                     1,
                     tint(sd.brightness)
                 );
+            }
+        }
+        else if (screen == SCREEN_GAME)
+        {
+            unsigned int nowT = cpu_ticks_now();
+            float dtG = (float)((double)(unsigned int)(nowT - gLastTick) / gTps);
+
+            gLastTick = nowT;
+            if (dtG > 0.05f) dtG = 0.05f;
+
+            game_step(dtG);
+
+            if (gExitReq)
+            {
+                gExitReq = 0;
+                screen = SCREEN_MENU;
+                set_volumes(sd.musicVol, sd.masterVol);
+            }
+            else
+            {
+                game_draw(gsGlobal, sd.brightness);
             }
         }
         else if (screen == SCREEN_PLAY)
