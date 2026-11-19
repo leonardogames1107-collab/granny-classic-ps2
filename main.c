@@ -216,6 +216,10 @@ static u64 tint(int level)
     return GS_SETREG_RGBAQ(v, v, v, 0x80, 0);
 }
 
+static short cfmBuf[22050 * 2];   /* som de confirmação (X) */
+static int cfmBytes = 0;
+static int cfmPos[SFX_VOICES] = {-1, -1, -1};
+
 static short sfxBuf[22050 * 2];   /* até 1 s estéreo a 22050 Hz */
 static int sfxBytes = 0;
 static int sfxPos[SFX_VOICES] = {-1, -1, -1};   /* -1 = voz livre */
@@ -242,12 +246,38 @@ static void sfx_trigger(void)
     sfxPos[pick] = 0;   /* reaproveita a voz mais antiga (já quase no fim) */
 }
 
+/* Som de confirmação (X). Se o arquivo não existir, usa o som do cursor. */
+static void sfx_confirm(void)
+{
+    int v, pick = 0;
+
+    if (cfmBytes <= 0)
+    {
+        sfx_trigger();
+        return;
+    }
+
+    for (v = 0; v < SFX_VOICES; v++)
+    {
+        if (cfmPos[v] < 0)
+        {
+            cfmPos[v] = 0;
+            return;
+        }
+        if (cfmPos[v] > cfmPos[pick])
+            pick = v;
+    }
+
+    cfmPos[pick] = 0;
+}
+
 /* Aplica o ganho da música e soma as vozes do efeito, com limite. */
 static void mix_audio(char *chunk, int bytes)
 {
     short *dst = (short *)chunk;
     int n = bytes / 2;
     int total = sfxBytes / 2;
+    int ctotal = cfmBytes / 2;
     int i, v;
 
     for (i = 0; i < n; i++)
@@ -271,6 +301,25 @@ static void mix_audio(char *chunk, int bytes)
 
                 if (sfxPos[v] >= total)
                     sfxPos[v] = -1;
+            }
+        }
+
+        for (v = 0; v < SFX_VOICES; v++)
+        {
+            if (cfmPos[v] >= 0)
+            {
+                int p = cfmPos[v];
+                int smp = (cfmBuf[p] * sfxGain) >> 8;
+                int rem = ctotal - p;
+
+                if (rem < SFX_FADE)
+                    smp = smp * rem / SFX_FADE;
+
+                s += smp;
+                cfmPos[v] = p + 1;
+
+                if (cfmPos[v] >= ctotal)
+                    cfmPos[v] = -1;
             }
         }
 
@@ -1139,6 +1188,24 @@ int main(int argc, char *argv[])
 
             fclose(sfx);
         }
+
+        sfx = fopen("mass:/GRANNY/som_confirma.wav", "rb");
+
+        if (sfx != NULL)
+        {
+            long sStart = 0, sSize = 0;
+
+            if (wav_open_data(sfx, &sStart, &sSize))
+            {
+                if (sSize > (long)sizeof(cfmBuf))
+                    sSize = (long)sizeof(cfmBuf);
+
+                cfmBytes = (int)fread(cfmBuf, 1, (size_t)sSize, sfx);
+                cfmBytes &= ~3;
+            }
+
+            fclose(sfx);
+        }
     }
 
     if (padInit(0) == 1)
@@ -1367,14 +1434,15 @@ int main(int argc, char *argv[])
                         if ((pressedButtons & PAD_CROSS) && optSel == OPT_CREDITS)
                         {
                             screen = SCREEN_CREDITS;
-                            sfx_trigger();
                         }
                         else if ((pressedButtons & PAD_CROSS) && optSel == OPT_LANG)
                         {
                             sd.language = (sd.language + 1) % LANGS;
                             cfgDirty = 1;
-                            sfx_trigger();
                         }
+
+                        if (pressedButtons & PAD_CROSS)
+                            sfx_confirm();      /* X em qualquer linha das opções */
 
                         if (pressedButtons & PAD_CIRCLE)
                         {
