@@ -9,6 +9,8 @@
 #include <audsrv.h>
 #include <libmc.h>
 #include <string.h>
+#include <stdlib.h>
+#include <time.h>
 
 static unsigned char padBuf[256] __attribute__((aligned(64)));
 
@@ -142,41 +144,46 @@ static int load_png(GSGLOBAL *g, GSTEXTURE *t, const char *name)
     return 0;
 }
 
-static void load_assets(GSGLOBAL *g)
+/* Carrega todas as imagens de um idioma. */
+static void load_lang(GSGLOBAL *g, int l)
 {
     char name[48];
-    int l, b;
+    int b;
+
+    snprintf(name, sizeof(name), "menu_%s", langCode[l]);
+    assets[l].menuOk = load_png(g, &assets[l].menu, name);
+
+    for (b = 0; b < MENU_COUNT; b++)
+    {
+        snprintf(name, sizeof(name), "destaque_%s_%s", langCode[l], btnName[b]);
+        assets[l].hlOk[b] = load_png(g, &assets[l].hl[b], name);
+    }
+
+    snprintf(name, sizeof(name), "opcoes_%s", langCode[l]);
+    assets[l].optOk = load_png(g, &assets[l].opt, name);
+
+    snprintf(name, sizeof(name), "creditos_%s", langCode[l]);
+    assets[l].credOk = load_png(g, &assets[l].cred, name);
+
+    snprintf(name, sizeof(name), "multi_%s", langCode[l]);
+    assets[l].multiOk = load_png(g, &assets[l].multi, name);
+
+    snprintf(name, sizeof(name), "dev_%s", langCode[l]);
+    assets[l].devOk = load_png(g, &assets[l].dev, name);
+
+    snprintf(name, sizeof(name), "jogar_%s", langCode[l]);
+    assets[l].playOk = load_png(g, &assets[l].play, name);
+
+    snprintf(name, sizeof(name), "jogarx_%s", langCode[l]);
+    assets[l].atlasOk = load_png(g, &assets[l].atlas, name);
+}
+
+static void load_assets(GSGLOBAL *g)
+{
+    int l;
 
     for (l = 0; l < LANGS; l++)
-    {
-        snprintf(name, sizeof(name), "menu_%s", langCode[l]);
-        assets[l].menuOk = load_png(g, &assets[l].menu, name);
-
-        for (b = 0; b < MENU_COUNT; b++)
-        {
-            snprintf(name, sizeof(name), "destaque_%s_%s",
-                     langCode[l], btnName[b]);
-            assets[l].hlOk[b] = load_png(g, &assets[l].hl[b], name);
-        }
-
-        snprintf(name, sizeof(name), "opcoes_%s", langCode[l]);
-        assets[l].optOk = load_png(g, &assets[l].opt, name);
-
-        snprintf(name, sizeof(name), "creditos_%s", langCode[l]);
-        assets[l].credOk = load_png(g, &assets[l].cred, name);
-
-        snprintf(name, sizeof(name), "multi_%s", langCode[l]);
-        assets[l].multiOk = load_png(g, &assets[l].multi, name);
-
-        snprintf(name, sizeof(name), "dev_%s", langCode[l]);
-        assets[l].devOk = load_png(g, &assets[l].dev, name);
-
-        snprintf(name, sizeof(name), "jogar_%s", langCode[l]);
-        assets[l].playOk = load_png(g, &assets[l].play, name);
-
-        snprintf(name, sizeof(name), "jogarx_%s", langCode[l]);
-        assets[l].atlasOk = load_png(g, &assets[l].atlas, name);
-    }
+        load_lang(g, l);
 }
 
 /* Efeito sonoro do cursor, misturado por software na música. */
@@ -195,12 +202,16 @@ static void set_volumes(int musicVol, int masterVol)
 }
 
 /* Brilho 0..10 (5 = original): escurece/clareia as imagens do jogo. */
+static int fadeLevel = 256;      /* 0..256: entrada suave do menu depois da abertura */
+
 static u64 tint(int level)
 {
     int v = 0x80 * (40 + 12 * level) / 100;
 
     if (v > 0xFF)
         v = 0xFF;
+
+    v = v * fadeLevel / 256;
 
     return GS_SETREG_RGBAQ(v, v, v, 0x80, 0);
 }
@@ -711,6 +722,292 @@ static void draw_sub(GSGLOBAL *g, GSTEXTURE *t, float x, float y,
         z, color);
 }
 
+/* ---------- Abertura: vídeo (quadros PNG) + áudio ---------- */
+#define INTRO_FPS     20          /* quadros por segundo dos arquivos intro/iNNNN.png */
+#define INTRO_BG_LOAD 1           /* 1 = carrega as imagens do menu durante a abertura */
+#define INTRO_WAV     "mass:/GRANNY/intro.wav"
+
+static volatile int loaderDone = 0;      /* 1 = todas as imagens carregadas */
+static GSTEXTURE introTex[2];            /* dois quadros alternados (fixos na memória) */
+
+static unsigned int cpu_ticks_now(void)
+{
+#if defined(__mips__)
+    unsigned int c;
+
+    __asm__ __volatile__("mfc0 %0, $9" : "=r"(c));   /* contador da CPU */
+    return c;
+#else
+    return (unsigned int)clock();
+#endif
+}
+
+/* Mede quantos "ticks" do contador passam por segundo, usando o vsync. */
+static double measure_tick_rate(GSGLOBAL *g, u64 black, double refresh)
+{
+    unsigned int t0, t1;
+    double tps;
+    int i;
+
+    for (i = 0; i < 3; i++)
+    {
+        gsKit_clear(g, black);
+        gsKit_sync_flip(g);
+        gsKit_queue_exec(g);
+    }
+
+    t0 = cpu_ticks_now();
+
+    for (i = 0; i < 20; i++)
+    {
+        gsKit_clear(g, black);
+        gsKit_sync_flip(g);
+        gsKit_queue_exec(g);
+    }
+
+    t1 = cpu_ticks_now();
+    tps = (double)(unsigned int)(t1 - t0) / (20.0 / refresh);
+
+    if (tps < 5.0e7 || tps > 6.0e8)
+        tps = 294912000.0;                 /* valor típico do EE */
+
+    return tps;
+}
+
+static int introFlat = 0;      /* 1 = quadros soltos na pasta GRANNY (sem subpasta) */
+
+/* Procura os quadros em GRANNY/intro/ e, se o 1º não estiver lá,
+   em GRANNY/ (soltos). Quem achar primeiro vale para a abertura toda. */
+static int intro_load_frame(GSGLOBAL *g, GSTEXTURE *t, int n)
+{
+    char path[64];
+    int pass;
+
+    for (pass = 0; pass < 2; pass++)
+    {
+        snprintf(path, sizeof(path),
+                 introFlat ? "mass:/GRANNY/i%04d.png"
+                           : "mass:/GRANNY/intro/i%04d.png", n);
+
+        memset(t, 0, sizeof(*t));
+        t->Delayed = GS_SETTING_ON;
+
+        if (gsKit_texture_png(g, t, path) == 0)
+        {
+            t->Filter = GS_FILTER_LINEAR;          /* suaviza o vídeo ampliado */
+            gsKit_TexManager_invalidate(g, t);     /* força o envio do novo quadro à VRAM */
+            return 1;
+        }
+
+        if (n != 1 || introFlat)
+            return 0;                              /* acabaram os quadros */
+
+        introFlat = 1;                             /* 1º quadro: tenta soltos na pasta */
+    }
+
+    return 0;
+}
+
+/* Toca a abertura. X ou START pulam. Devolve os botões segurados no fim,
+   para o menu não "herdar" o X que pulou a abertura. */
+static unsigned short play_intro(GSGLOBAL *g, int audioReady, int padOpened)
+{
+    static char chunk[2048] __attribute__((aligned(16)));
+    struct padButtonStatus pb;
+    FILE *wav = NULL;
+    long wStart = 0, wSize = 0, wRemain = 0;
+    int pending = 0, ok[2] = {0, 0}, cur = 0, shown = 0;
+    unsigned short held = 0;
+    double tps, elapsed = 0.0;
+    unsigned int last, now;
+    u64 black = GS_SETREG_RGBAQ(0, 0, 0, 0, 0);
+    u64 white = GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0);
+    double refresh = (g->Height >= 512) ? 50.0 : 59.94;
+
+    tps = measure_tick_rate(g, black, refresh);
+
+    if (audioReady)
+    {
+        wav = fopen(INTRO_WAV, "rb");
+
+        if (wav != NULL && wav_open_data(wav, &wStart, &wSize))
+        {
+            wRemain = wSize;
+        }
+        else
+        {
+            if (wav != NULL)
+                fclose(wav);
+            wav = NULL;
+        }
+    }
+
+    last = cpu_ticks_now();
+
+    for (;;)
+    {
+        int frame, pump;
+
+        now = cpu_ticks_now();
+        elapsed += (double)(unsigned int)(now - last) / tps;
+        last = now;
+
+        /* áudio da abertura (toca uma vez, sem repetir) */
+        for (pump = 0; pump < 3 && wav != NULL; pump++)
+        {
+            if (pending == 0 && wRemain > 0 &&
+                audsrv_available() >= (int)sizeof(chunk))
+            {
+                int want = (wRemain < (long)sizeof(chunk)) ? (int)wRemain
+                                                            : (int)sizeof(chunk);
+                int got = (int)fread(chunk, 1, (size_t)want, wav);
+
+                if (got <= 0)
+                {
+                    wRemain = 0;
+                }
+                else
+                {
+                    short *smp = (short *)chunk;
+                    int i;
+
+                    for (i = 0; i < got / 2; i++)
+                        smp[i] = (short)((smp[i] * musicGain) >> 8);
+
+                    wRemain -= got;
+                    pending = got;
+                }
+            }
+
+            if (pending > 0 && audsrv_available() >= pending)
+            {
+                int sent = audsrv_play_audio(chunk, pending);
+
+                if (sent > 0)
+                {
+                    if (sent < pending)
+                        memmove(chunk, chunk + sent, (size_t)(pending - sent));
+
+                    pending -= sent;
+                }
+            }
+
+            if (pending > 0)
+                break;
+        }
+
+        /* vídeo: o quadro certo para o tempo decorrido (pula se atrasar) */
+        frame = (int)(elapsed * INTRO_FPS) + 1;
+
+        if (frame != shown)
+        {
+            int idx = 1 - cur;
+
+            if (ok[idx])
+            {
+                free(introTex[idx].Mem);          /* quadro de 2 voltas atrás */
+                free(introTex[idx].Clut);
+                ok[idx] = 0;
+            }
+
+            if (!intro_load_frame(g, &introTex[idx], frame))
+                break;                            /* acabaram os quadros */
+
+            ok[idx] = 1;
+            cur = idx;
+            shown = frame;
+        }
+
+        gsKit_clear(g, black);
+
+        if (ok[cur])
+        {
+            gsKit_TexManager_bind(g, &introTex[cur]);
+            gsKit_prim_sprite_texture(
+                g, &introTex[cur],
+                0.0f, 0.0f,
+                0.0f, 0.0f,
+                (float)g->Width, (float)g->Height,
+                (float)introTex[cur].Width, (float)introTex[cur].Height,
+                1, white);
+        }
+
+        gsKit_sync_flip(g);
+        gsKit_queue_exec(g);
+
+        /* X ou START pulam a abertura */
+        if (padOpened && padGetState(0, 0) == PAD_STATE_STABLE &&
+            padRead(0, 0, &pb) != 0)
+        {
+            held = (unsigned short)(~pb.btns);
+
+            if (held & (PAD_CROSS | PAD_START))
+                break;
+        }
+    }
+
+    if (ok[0]) { free(introTex[0].Mem); free(introTex[0].Clut); }
+    if (ok[1]) { free(introTex[1].Mem); free(introTex[1].Clut); }
+    memset(introTex, 0, sizeof(introTex));
+
+    if (wav != NULL)
+        fclose(wav);
+
+    return held;
+}
+
+#if INTRO_BG_LOAD
+extern void *_gp;
+
+static GSGLOBAL *loaderG = NULL;
+static int loaderFirst = 0;
+static char loaderStack[64 * 1024] __attribute__((aligned(16)));
+
+/* Carrega as imagens em segundo plano (prioridade baixa: só usa o tempo
+   em que o jogo está esperando o vsync). */
+static void loader_thread(void *arg)
+{
+    int i;
+
+    (void)arg;
+
+    for (i = 0; i < LANGS; i++)
+        load_lang(loaderG, (loaderFirst + i) % LANGS);
+
+    loaderDone = 1;
+    ExitThread();
+}
+
+static int start_loader(GSGLOBAL *g, int firstLang)
+{
+    ee_thread_t th;
+    int id;
+
+    loaderG = g;
+    loaderFirst = firstLang;
+    loaderDone = 0;
+
+    memset(&th, 0, sizeof(th));
+    th.func = (void *)loader_thread;
+    th.stack = loaderStack;
+    th.stack_size = sizeof(loaderStack);
+    th.gp_reg = &_gp;
+    th.initial_priority = 64;
+
+    id = CreateThread(&th);
+    if (id < 0)
+        return 0;
+
+    if (StartThread(id, NULL) < 0)
+    {
+        DeleteThread(id);
+        return 0;
+    }
+
+    return 1;
+}
+#endif
+
 int main(int argc, char *argv[])
 {
     GSGLOBAL *gsGlobal;
@@ -780,10 +1077,6 @@ int main(int argc, char *argv[])
     gsKit_init_screen(gsGlobal);
     gsKit_mode_switch(gsGlobal, GS_ONESHOT);
 
-    /* Carrega as imagens de todos os idiomas antes de iniciar o áudio,
-       para trocar de idioma depois sem pausas. */
-    load_assets(gsGlobal);
-
     if (SifLoadModule("rom0:LIBSD", 0, NULL) >= 0 &&
         SifLoadModule("mass:/GRANNY/audsrv.irx", 0, NULL) >= 0)
     {
@@ -845,8 +1138,37 @@ int main(int argc, char *argv[])
             padOpened = 1;
     }
 
+    /* Abertura: toca o vídeo e o som enquanto as imagens do menu carregam
+       em segundo plano. Se não der para usar segundo plano, carrega antes. */
+#if INTRO_BG_LOAD
+    if (!start_loader(gsGlobal, sd.language))
+#endif
+    {
+        load_assets(gsGlobal);
+        loaderDone = 1;
+    }
+
+    oldButtons = play_intro(gsGlobal, audioReady, padOpened);
+
+    /* Se a abertura acabou antes do carregamento, espera terminar. */
+    while (!loaderDone)
+    {
+        gsKit_clear(gsGlobal, GS_SETREG_RGBAQ(0, 0, 0, 0, 0));
+        gsKit_sync_flip(gsGlobal);
+        gsKit_queue_exec(gsGlobal);
+    }
+
+    fadeLevel = 0;                        /* o menu aparece aos poucos */
+
     while (1)
     {
+        if (fadeLevel < 256)
+        {
+            fadeLevel += 6;
+            if (fadeLevel > 256)
+                fadeLevel = 256;
+        }
+
         /* ---------- Áudio ---------- */
         for (int pump = 0; pump < 3 && audioReady && musicFile != NULL; pump++)
         {
