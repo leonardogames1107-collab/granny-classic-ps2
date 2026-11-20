@@ -781,6 +781,12 @@ static void draw_sub(GSGLOBAL *g, GSTEXTURE *t, float x, float y,
 static volatile int loaderDone = 0;      /* 1 = todas as imagens carregadas */
 static GSTEXTURE introTex[2];            /* dois quadros alternados (fixos na memória) */
 
+static void clear_screen(GSGLOBAL *g, u64 c)
+{
+    gsKit_clear(g, c);
+    gsKit_set_test(g, GS_ZTEST_OFF);
+}
+
 static unsigned int cpu_ticks_now(void)
 {
 #if defined(__mips__)
@@ -802,7 +808,7 @@ static double measure_tick_rate(GSGLOBAL *g, u64 black, double refresh)
 
     for (i = 0; i < 3; i++)
     {
-        gsKit_clear(g, black);
+        clear_screen(g, black);
         gsKit_sync_flip(g);
         gsKit_queue_exec(g);
     }
@@ -811,7 +817,7 @@ static double measure_tick_rate(GSGLOBAL *g, u64 black, double refresh)
 
     for (i = 0; i < 20; i++)
     {
-        gsKit_clear(g, black);
+        clear_screen(g, black);
         gsKit_sync_flip(g);
         gsKit_queue_exec(g);
     }
@@ -977,7 +983,7 @@ static unsigned short play_intro(GSGLOBAL *g, int audioReady, int padOpened)
                 break;                            /* não achou nenhum quadro: desiste */
         }
 
-        gsKit_clear(g, black);
+        clear_screen(g, black);
 
         if (ok[cur])
         {
@@ -1381,14 +1387,300 @@ static void g_collide(float *px, float *pz, float h)
     }
 }
 
+/* =====================================================================
+   CASA REAL: carrega GRANNY/casa.bin (gerado a partir do modelo 3D).
+   Desenha só os cômodos visíveis (lista pré-calculada) e só os pedaços
+   que estão dentro da tela. Colisão e altura do chão vêm do arquivo.
+   ===================================================================== */
+#define H_STEP   0.32f     /* degrau máximo (m) */
+#define H_FAR    22.0f
+#define H_MAX_TRIS 6500    /* limite de triângulos por quadro */
+
+typedef struct { float mn[3], mx[3]; unsigned int a, b; } HBox;
+
+static unsigned char *hData = NULL;
+static int hLoaded = 0, hTried = 0, hCur = 0;
+static unsigned int hNC = 0, hNCh = 0, hNT = 0;
+static float hLevel[5];
+static unsigned int hGW, hGH, hHW, hHH, hHK;
+static float hGX0, hGZ0, hGS, hHX0, hHZ0, hHS;
+static float hSpawn[4];
+static const HBox *hCells = NULL, *hChunks = NULL;
+static const short *hTris = NULL, *hHt = NULL;
+static const unsigned char *hOcc = NULL, *hLab = NULL;
+static unsigned int hPvs[32];
+static float gFeet = 0.0f, gVY = 0.0f, gCamFeet = 0.0f;
+static int hTriCount = 0;
+
+static unsigned int rd_u(const unsigned char *p, int off) { unsigned int v; memcpy(&v, p + off, 4); return v; }
+static float rd_f(const unsigned char *p, int off) { float v; memcpy(&v, p + off, 4); return v; }
+
+static int house_load(const char *path)
+{
+    FILE *f;
+    long sz;
+    unsigned int offC, offCh, offT, offO, offL, offH, offP;
+    int i;
+
+    f = fopen(path, "rb");
+    if (f == NULL)
+        return 0;
+
+    fseek(f, 0, SEEK_END);
+    sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (sz < 140)
+    {
+        fclose(f);
+        return 0;
+    }
+
+    hData = (unsigned char *)malloc((size_t)sz);
+    if (hData == NULL)
+    {
+        fclose(f);
+        return 0;
+    }
+
+    if (fread(hData, 1, (size_t)sz, f) != (size_t)sz)
+    {
+        fclose(f);
+        free(hData);
+        hData = NULL;
+        return 0;
+    }
+    fclose(f);
+
+    if (memcmp(hData, "CASA", 4) != 0 || rd_u(hData, 4) != 1u)
+    {
+        free(hData);
+        hData = NULL;
+        return 0;
+    }
+
+    hNC = rd_u(hData, 8);  hNCh = rd_u(hData, 12);  hNT = rd_u(hData, 16);
+    for (i = 0; i < 5; i++)
+        hLevel[i] = rd_f(hData, 24 + 4 * i);
+    hGW = rd_u(hData, 44);  hGH = rd_u(hData, 48);
+    hGX0 = rd_f(hData, 52); hGZ0 = rd_f(hData, 56); hGS = rd_f(hData, 60);
+    hHW = rd_u(hData, 64);  hHH = rd_u(hData, 68);
+    hHX0 = rd_f(hData, 72); hHZ0 = rd_f(hData, 76); hHS = rd_f(hData, 80);
+    hHK = rd_u(hData, 84);
+    for (i = 0; i < 4; i++)
+        hSpawn[i] = rd_f(hData, 88 + 4 * i);
+
+    offC = rd_u(hData, 104);  offCh = rd_u(hData, 108);  offT = rd_u(hData, 112);
+    offO = rd_u(hData, 116);  offL = rd_u(hData, 120);   offH = rd_u(hData, 124);
+    offP = rd_u(hData, 128);
+
+    if (hNC == 0 || hNC > 32 || offP + hNC * 4 > (unsigned int)sz)
+    {
+        free(hData);
+        hData = NULL;
+        return 0;
+    }
+
+    hCells  = (const HBox *)(hData + offC);
+    hChunks = (const HBox *)(hData + offCh);
+    hTris   = (const short *)(hData + offT);
+    hOcc    = hData + offO;
+    hLab    = hData + offL;
+    hHt     = (const short *)(hData + offH);
+    memset(hPvs, 0, sizeof(hPvs));
+    for (i = 0; i < (int)hNC; i++)
+        hPvs[i] = rd_u(hData, (int)offP + 4 * i);
+
+    hLoaded = 1;
+    return 1;
+}
+
+static int h_level(float feet)
+{
+    int k, l = 0;
+
+    for (k = 0; k < 5; k++)
+        if (hLevel[k] <= feet + 0.45f)
+            l = k;
+    return l;
+}
+
+static int h_occ_at(int lv, float x, float z)
+{
+    int gx, gz;
+
+    if (x < hGX0 || z < hGZ0)
+        return 1;
+    gx = (int)((x - hGX0) / hGS);
+    gz = (int)((z - hGZ0) / hGS);
+    if (gx >= (int)hGW || gz >= (int)hGH)
+        return 1;
+    return hOcc[(size_t)lv * hGW * hGH + (size_t)gz * hGW + (size_t)gx];
+}
+
+static int h_wall_hit(int lv, float x, float z)
+{
+    int rc = (int)(G_RADIUS / hGS) + 1, dx, dz;
+
+    for (dz = -rc; dz <= rc; dz++)
+    {
+        for (dx = -rc; dx <= rc; dx++)
+        {
+            float fx = (float)dx * hGS, fz = (float)dz * hGS;
+
+            if (fx * fx + fz * fz > G_RADIUS * G_RADIUS)
+                continue;
+            if (h_occ_at(lv, x + fx, z + fz))
+                return 1;
+        }
+    }
+    return 0;
+}
+
+/* 1 se dá para ficar em (x,z); *floorY = altura do chão ali. */
+static int h_floor(float x, float z, float feet, float headH, float *floorY)
+{
+    int hx, hz, k;
+    const short *L;
+    float best = -1.0e9f;
+
+    if (x < hHX0 || z < hHZ0)
+        return 0;
+    hx = (int)((x - hHX0) / hHS);
+    hz = (int)((z - hHZ0) / hHS);
+    if (hx >= (int)hHW || hz >= (int)hHH)
+        return 0;
+
+    L = hHt + ((size_t)hz * hHW + (size_t)hx) * hHK;
+
+    for (k = 0; k < (int)hHK; k++)
+    {
+        float y;
+        if (L[k] == -32768) break;
+        y = (float)L[k] / 256.0f;
+        if (y <= feet + H_STEP && y > best)
+            best = y;
+    }
+    if (best < -1.0e8f)
+        return 0;
+
+    for (k = 0; k < (int)hHK; k++)
+    {
+        float y;
+        if (L[k] == -32768) break;
+        y = (float)L[k] / 256.0f;
+        if (y > best + H_STEP && y < best + headH)
+            return 0;                     /* bate a cabeça */
+    }
+
+    *floorY = best;
+    return 1;
+}
+
+static int h_find_cell(void)
+{
+    int lv = h_level(gFeet), r, dx, dz;
+    int gx, gz;
+
+    if (gPX < hGX0 || gPZ < hGZ0)
+        return hCur;
+    gx = (int)((gPX - hGX0) / hGS);
+    gz = (int)((gPZ - hGZ0) / hGS);
+
+    for (r = 0; r <= 8; r++)
+    {
+        for (dz = -r; dz <= r; dz++)
+        {
+            for (dx = -r; dx <= r; dx++)
+            {
+                int x = gx + dx, z = gz + dz;
+
+                if (r > 0 && dx > -r && dx < r && dz > -r && dz < r)
+                    continue;
+                if (x < 0 || z < 0 || x >= (int)hGW || z >= (int)hGH)
+                    continue;
+                if (hLab[(size_t)lv * hGW * hGH + (size_t)z * hGW + (size_t)x])
+                    return (int)hLab[(size_t)lv * hGW * hGH + (size_t)z * hGW + (size_t)x] - 1;
+            }
+        }
+    }
+    return hCur;
+}
+
+static void house_move(float dx, float dz, float headH, float dt)
+{
+    float fy = 0.0f;
+    int lv = h_level(gFeet);
+
+    if (dx != 0.0f)
+    {
+        float nx = gPX + dx;
+        if (!h_wall_hit(lv, nx, gPZ) && h_floor(nx, gPZ, gFeet, headH, &fy))
+            gPX = nx;
+    }
+    if (dz != 0.0f)
+    {
+        float nz = gPZ + dz;
+        if (!h_wall_hit(lv, gPX, nz) && h_floor(gPX, nz, gFeet, headH, &fy))
+            gPZ = nz;
+    }
+
+    if (h_floor(gPX, gPZ, gFeet, headH, &fy))
+    {
+        if (fy >= gFeet - 0.001f)
+        {
+            gFeet = fy;
+            gVY = 0.0f;
+        }
+        else
+        {
+            gVY -= 9.8f * dt;
+            gFeet += gVY * dt;
+            if (gFeet < fy)
+            {
+                gFeet = fy;
+                gVY = 0.0f;
+            }
+        }
+    }
+
+    hCur = h_find_cell();
+}
+
+static int h_can_stand(void)
+{
+    float fy = 0.0f;
+    return h_floor(gPX, gPZ, gFeet, G_STAND_H, &fy);
+}
+
 static void game_start(void)
 {
-    if (!gSceneBuilt)
-        g_build_scene();
+    if (!hTried)
+    {
+        hTried = 1;
+        house_load("mass:/GRANNY/casa.bin");
+    }
 
-    gPX = 0.9f;
-    gPZ = 2.0f;
-    gYaw = G_PI * 0.5f;      /* olhando para a porta (leste) */
+    if (hLoaded)
+    {
+        gPX = hSpawn[0];
+        gFeet = hSpawn[1];
+        gPZ = hSpawn[2];
+        gCamFeet = gFeet;
+        gVY = 0.0f;
+        gYaw = hSpawn[3];
+        hCur = 0;
+        hCur = h_find_cell();
+    }
+    else
+    {
+        if (!gSceneBuilt)
+            g_build_scene();
+
+        gPX = 0.9f;
+        gPZ = 2.0f;
+        gYaw = G_PI * 0.5f;      /* olhando para a porta (leste) */
+    }
     gPitch = 0.0f;
     gCrouch = 0;
     gCrouchReq = 0;
@@ -1425,7 +1717,7 @@ static void game_step(float dt)
         gCrouchReq = 0;
         if (!gCrouch)
             gCrouch = 1;
-        else if (!g_blocked(gPX, gPZ, G_STAND_H))
+        else if (hLoaded ? h_can_stand() : !g_blocked(gPX, gPZ, G_STAND_H))
             gCrouch = 0;
     }
 
@@ -1443,9 +1735,19 @@ static void game_step(float dt)
         vz /= len;
     }
 
-    gPX += vx * speed * dt;
-    gPZ += vz * speed * dt;
-    g_collide(&gPX, &gPZ, h);
+    if (hLoaded)
+    {
+        house_move(vx * speed * dt, vz * speed * dt, h, dt);
+        k = dt * 12.0f;
+        if (k > 1.0f) k = 1.0f;
+        gCamFeet += (gFeet - gCamFeet) * k;
+    }
+    else
+    {
+        gPX += vx * speed * dt;
+        gPZ += vz * speed * dt;
+        g_collide(&gPX, &gPZ, h);
+    }
 
     target = gCrouch ? G_EYE_CROUCH : G_EYE_STAND;
     k = dt * 10.0f;
@@ -1499,6 +1801,224 @@ static u64 g_color(const GQuad *q, float k)
     return GS_SETREG_RGBAQ(g_clamp255(r), g_clamp255(g), g_clamp255(b), 0x80, 0);
 }
 
+/* visibilidade de uma caixa (cantos em coordenadas do mundo) */
+static int h_box_visible(const float *mn, const float *mx, const float *cam,
+                         const float *Rv, const float *Uv, const float *Fv,
+                         float kx, float ky)
+{
+    int i, nl = 0, nr = 0, nb = 0, nt = 0, nn = 0, nf = 0;
+
+    for (i = 0; i < 8; i++)
+    {
+        float dx = ((i & 1) ? mx[0] : mn[0]) - cam[0];
+        float dy = ((i & 2) ? mx[1] : mn[1]) - cam[1];
+        float dz = ((i & 4) ? mx[2] : mn[2]) - cam[2];
+        float x = dx * Rv[0] + dy * Rv[1] + dz * Rv[2];
+        float y = dx * Uv[0] + dy * Uv[1] + dz * Uv[2];
+        float z = dx * Fv[0] + dy * Fv[1] + dz * Fv[2];
+
+        if (z < G_NEAR)      nn++;
+        if (z > H_FAR)       nf++;
+        if (x < -kx * z)     nl++;
+        if (x >  kx * z)     nr++;
+        if (y < -ky * z)     nb++;
+        if (y >  ky * z)     nt++;
+    }
+    return !(nn == 8 || nf == 8 || nl == 8 || nr == 8 || nb == 8 || nt == 8);
+}
+
+static void h_emit(GSGLOBAL *gs, const float *sx, const float *sy, const float *z,
+                   const float *br, int r, int g, int b)
+{
+    int iz[3], i;
+    u64 c[3];
+
+    for (i = 0; i < 3; i++)
+    {
+        float zz = z[i] < G_NEAR ? G_NEAR : z[i];
+        int zi = (int)(65535.0f * G_NEAR / zz);
+
+        iz[i] = zi < 1 ? 1 : (zi > 65535 ? 65535 : zi);
+        c[i] = GS_SETREG_RGBAQ(g_clamp255((int)((float)r * br[i])),
+                               g_clamp255((int)((float)g * br[i])),
+                               g_clamp255((int)((float)b * br[i])), 0x80, 0);
+    }
+
+    gsKit_prim_triangle_gouraud_3d(gs, sx[0], sy[0], iz[0], sx[1], sy[1], iz[1],
+                                   sx[2], sy[2], iz[2], c[0], c[1], c[2]);
+
+    hTriCount++;
+    if (G_FLUSH_TRIS > 0 && (hTriCount % G_FLUSH_TRIS) == 0)
+        gsKit_queue_exec(gs);
+}
+
+static void house_draw(GSGLOBAL *gs, int brightness)
+{
+    float W = (float)gs->Width, H = (float)gs->Height;
+    float focal = W * 0.60f;
+    float kx = (W * 0.5f + 48.0f) / focal, ky = (H * 0.5f + 48.0f) / focal;
+    float kxe = (W * 0.5f) / focal, kye = (H * 0.5f) / focal;
+    float bscale = 0.45f + 0.055f * (float)brightness;
+    float sy_ = g_sin(gYaw), cy_ = g_cos(gYaw), sp = g_sin(gPitch), cp = g_cos(gPitch);
+    float Fv[3], Rv[3], Uv[3], cam[3];
+    unsigned int mask;
+    int c, j, i;
+    const float inv = 1.0f / 256.0f;
+
+    Fv[0] = sy_ * cp; Fv[1] = sp;   Fv[2] = cy_ * cp;
+    Rv[0] = cy_;      Rv[1] = 0.0f; Rv[2] = -sy_;
+    Uv[0] = -sy_ * sp; Uv[1] = cp;  Uv[2] = -cy_ * sp;
+    cam[0] = gPX; cam[1] = gCamFeet + gEye; cam[2] = gPZ;
+
+    /* limpa cor e Z (o desenho com teste de Z desligado grava Z = 0) */
+    gsKit_set_test(gs, GS_ZTEST_OFF);
+    gsKit_prim_sprite(gs, 0.0f, 0.0f, W, H, 0, GS_SETREG_RGBAQ(4, 4, 6, 0x80, 0));
+    gsKit_set_test(gs, GS_ZTEST_ON);
+
+    hTriCount = 0;
+    mask = hPvs[hCur];
+
+    {
+        int ord[32], no = 0, q, w;
+        float d2c[32];
+
+        for (c = 0; c < (int)hNC; c++)
+        {
+            const HBox *cb = &hCells[c];
+            float mx_ = (cb->mn[0] + cb->mx[0]) * 0.5f - cam[0];
+            float mz_ = (cb->mn[2] + cb->mx[2]) * 0.5f - cam[2];
+
+            if (!((mask >> c) & 1u) || cb->b == 0)
+                continue;
+            if (!h_box_visible(cb->mn, cb->mx, cam, Rv, Uv, Fv, kxe, kye))
+                continue;
+
+            d2c[no] = (c == hCur) ? -1.0f : mx_ * mx_ + mz_ * mz_;
+            ord[no++] = c;
+        }
+
+        for (q = 1; q < no; q++)             /* mais perto primeiro */
+        {
+            int oc = ord[q];
+            float od = d2c[q];
+
+            for (w = q - 1; w >= 0 && d2c[w] > od; w--)
+            {
+                ord[w + 1] = ord[w];
+                d2c[w + 1] = d2c[w];
+            }
+            ord[w + 1] = oc;
+            d2c[w + 1] = od;
+        }
+
+    for (q = 0; q < no; q++)
+    {
+        const HBox *cb = &hCells[ord[q]];
+
+        for (j = (int)cb->a; j < (int)(cb->a + cb->b); j++)
+        {
+            const HBox *ch = &hChunks[j];
+
+            if (!h_box_visible(ch->mn, ch->mx, cam, Rv, Uv, Fv, kxe, kye))
+                continue;
+            if (hTriCount + (int)ch->b > H_MAX_TRIS)
+                continue;
+
+            for (i = (int)ch->a; i < (int)(ch->a + ch->b); i++)
+            {
+                const short *t = hTris + (size_t)i * 11;
+                GV v[3];
+                int k, out = 0, behind = 0, allfar = 0;
+                int r = t[9] & 255, g = (t[9] >> 8) & 255, b = t[10] & 255;
+                float d2[3];
+
+                for (k = 0; k < 3; k++)
+                {
+                    float dx = (float)t[3 * k] * inv - cam[0];
+                    float dy = (float)t[3 * k + 1] * inv - cam[1];
+                    float dz = (float)t[3 * k + 2] * inv - cam[2];
+
+                    v[k].x = dx * Rv[0] + dy * Rv[1] + dz * Rv[2];
+                    v[k].y = dx * Uv[0] + dy * Uv[1] + dz * Uv[2];
+                    v[k].z = dx * Fv[0] + dy * Fv[1] + dz * Fv[2];
+                    d2[k] = dx * dx + dy * dy + dz * dz;
+                    v[k].b = bscale / (1.0f + 0.025f * d2[k]);
+
+                    if (v[k].z < G_NEAR) behind++;
+                    if (v[k].z > H_FAR)  allfar++;
+                    if (v[k].x < -kx * v[k].z) out |= 1;
+                    if (v[k].x >  kx * v[k].z) out |= 2;
+                    if (v[k].y < -ky * v[k].z) out |= 4;
+                    if (v[k].y >  ky * v[k].z) out |= 8;
+                }
+
+                if (behind == 3 || allfar == 3)
+                    continue;
+
+                /* face de um lado só: descarta se a câmera está do lado de trás */
+                if ((t[10] >> 8) & 3)
+                {
+                    float e1x = v[1].x - v[0].x, e1y = v[1].y - v[0].y, e1z = v[1].z - v[0].z;
+                    float e2x = v[2].x - v[0].x, e2y = v[2].y - v[0].y, e2z = v[2].z - v[0].z;
+                    float dp = (e1y * e2z - e1z * e2y) * v[0].x +
+                               (e1z * e2x - e1x * e2z) * v[0].y +
+                               (e1x * e2y - e1y * e2x) * v[0].z;
+
+                    if ((((t[10] >> 8) & 3) == 1 && dp > 0.0f) ||
+                        (((t[10] >> 8) & 3) == 2 && dp < 0.0f))
+                        continue;
+                }
+
+                if (behind == 0 && out == 0)
+                {
+                    float sx[3], sy[3], zz[3], br[3];
+
+                    for (k = 0; k < 3; k++)
+                    {
+                        sx[k] = W * 0.5f + v[k].x * focal / v[k].z;
+                        sy[k] = H * 0.5f - v[k].y * focal / v[k].z;
+                        zz[k] = v[k].z;
+                        br[k] = v[k].b;
+                    }
+                    h_emit(gs, sx, sy, zz, br, r, g, b);
+                }
+                else
+                {
+                    GV a[12], bb[12];
+                    int m = 3, n;
+
+                    a[0] = v[0]; a[1] = v[1]; a[2] = v[2];
+                    m = g_clip(a, m, bb, 0, 0, 1, -G_NEAR);   if (m < 3) continue;
+                    m = g_clip(bb, m, a, 1, 0, kx, 0);        if (m < 3) continue;
+                    m = g_clip(a, m, bb, -1, 0, kx, 0);       if (m < 3) continue;
+                    m = g_clip(bb, m, a, 0, 1, ky, 0);        if (m < 3) continue;
+                    m = g_clip(a, m, bb, 0, -1, ky, 0);       if (m < 3) continue;
+
+                    for (n = 1; n + 1 < m; n++)
+                    {
+                        float sx[3], sy[3], zz[3], br[3];
+                        const GV *p3[3];
+
+                        p3[0] = &bb[0]; p3[1] = &bb[n]; p3[2] = &bb[n + 1];
+                        for (k = 0; k < 3; k++)
+                        {
+                            sx[k] = W * 0.5f + p3[k]->x * focal / p3[k]->z;
+                            sy[k] = H * 0.5f - p3[k]->y * focal / p3[k]->z;
+                            zz[k] = p3[k]->z;
+                            br[k] = p3[k]->b;
+                        }
+                        h_emit(gs, sx, sy, zz, br, r, g, b);
+                    }
+                }
+            }
+        }
+    }
+
+    }
+
+    gsKit_set_test(gs, GS_ZTEST_OFF);        /* HUD por cima de tudo */
+}
+
 static void game_draw(GSGLOBAL *gs, int brightness)
 {
     static GSortItem order[G_MAXQ];
@@ -1513,6 +2033,12 @@ static void game_draw(GSGLOBAL *gs, int brightness)
     float Ux = -sy_ * sp, Uy = cp,  Uz = -cy_ * sp;     /* cima    */
     float cx = gPX, cy = gEye, cz = gPZ;
     int i, n = 0, tris = 0;
+
+    if (hLoaded)
+    {
+        house_draw(gs, brightness);
+        goto hud;
+    }
 
     /* 1) escolhe as faces voltadas para a câmera e mede a distância */
     for (i = 0; i < gQuadN; i++)
@@ -1583,6 +2109,7 @@ static void game_draw(GSGLOBAL *gs, int brightness)
     }
 
     /* 3) HUD: ponto central e silhueta (em pé / agachado) */
+hud:
     {
         u64 white = GS_SETREG_RGBAQ(255, 255, 255, 0x80, 0);
         float hx = 36.0f, hy = 52.0f;
@@ -1658,7 +2185,7 @@ int main(int argc, char *argv[])
     gsGlobal->PSM = GS_PSM_CT24;
     gsGlobal->PSMZ = GS_PSMZ_16S;
     gsGlobal->PrimAlphaEnable = GS_SETTING_OFF;
-    gsGlobal->ZBuffering = GS_SETTING_OFF;
+    gsGlobal->ZBuffering = GS_SETTING_ON;    /* usado só na cena 3D */
 
     dmaKit_init(
         D_CTRL_RELE_OFF,
@@ -1673,6 +2200,7 @@ int main(int argc, char *argv[])
 
     gsKit_init_screen(gsGlobal);
     gsKit_mode_switch(gsGlobal, GS_ONESHOT);
+    gsKit_set_test(gsGlobal, GS_ZTEST_OFF);      /* menu e abertura sem teste de Z */
 
     if (SifLoadModule("rom0:LIBSD", 0, NULL) >= 0 &&
         SifLoadModule("mass:/GRANNY/audsrv.irx", 0, NULL) >= 0)
@@ -1755,6 +2283,18 @@ int main(int argc, char *argv[])
 
     /* Abertura: toca o vídeo e o som enquanto as imagens do menu carregam
        em segundo plano. Se não der para usar segundo plano, carrega antes. */
+    {
+        int clr;
+
+        /* Limpa as duas telas antes de carregar, senão aparece lixo de vídeo. */
+        for (clr = 0; clr < 4; clr++)
+        {
+            clear_screen(gsGlobal, GS_SETREG_RGBAQ(0, 0, 0, 0, 0));
+            gsKit_sync_flip(gsGlobal);
+            gsKit_queue_exec(gsGlobal);
+        }
+    }
+
 #if INTRO_BG_LOAD
     if (!start_loader(gsGlobal, sd.language))
 #endif
@@ -1768,7 +2308,7 @@ int main(int argc, char *argv[])
     /* Se a abertura acabou antes do carregamento, espera terminar. */
     while (!loaderDone)
     {
-        gsKit_clear(gsGlobal, GS_SETREG_RGBAQ(0, 0, 0, 0, 0));
+        clear_screen(gsGlobal, GS_SETREG_RGBAQ(0, 0, 0, 0, 0));
         gsKit_sync_flip(gsGlobal);
         gsKit_queue_exec(gsGlobal);
     }
@@ -2140,7 +2680,7 @@ int main(int argc, char *argv[])
         }
 
         /* ---------- Vídeo ---------- */
-        gsKit_clear(gsGlobal, black);
+        clear_screen(gsGlobal, black);
 
         if (screen == SCREEN_CREDITS)
         {
