@@ -1414,6 +1414,13 @@ static unsigned int hPvs[32];
 static float gFeet = 0.0f, gVY = 0.0f, gCamFeet = 0.0f;
 static int   gStuckN = 0;         /* quadros seguidos empurrando sem sair do lugar */
 static int   gDebug = 0;          /* 1 = painel de números (SELECT liga/desliga) */
+static int   gDbgFlush = 0;       /* diagnóstico (só com o painel ligado): TRIÂNGULO troca de quantos em quantos triângulos esvazia a fila */
+static int   gDbgZ = 0;           /* QUADRADO troca a escala da profundidade */
+static int   gDbgPvs = 0;         /* L2 liga/desliga a lista de cômodos visíveis */
+static int   gDbgCull = 0;        /* R2 liga/desliga o descarte de pedaços fora da tela */
+static float hZN = 0.25f;
+static int   hFlushN = 100;
+#define HUD_Z 65535               /* HUD no Z máximo: passa no teste de profundidade em qualquer lugar */
 static float gRawDt = 0.033f;     /* tempo real do último quadro (s) */
 static float gFpsAvg = 30.0f;
 static int hTriCount = 0;
@@ -1876,8 +1883,8 @@ static void h_emit(GSGLOBAL *gs, const float *sx, const float *sy, const float *
 
     for (i = 0; i < 3; i++)
     {
-        float zz = z[i] < H_ZN ? H_ZN : z[i];
-        int zi = (int)(65535.0f * H_ZN / zz);          /* H_ZN maior = mais precisão de profundidade longe da câmera */
+        float zz = z[i] < hZN ? hZN : z[i];
+        int zi = (int)(65535.0f * hZN / zz);          /* H_ZN maior = mais precisão de profundidade longe da câmera */
 
         iz[i] = zi < 1 ? 1 : (zi > 65535 ? 65535 : zi);
         c[i] = GS_SETREG_RGBAQ(g_clamp255((int)((float)r * br[i])),
@@ -1889,7 +1896,7 @@ static void h_emit(GSGLOBAL *gs, const float *sx, const float *sy, const float *
                                    sx[2], sy[2], iz[2], c[0], c[1], c[2]);
 
     hTriCount++;
-    if (G_FLUSH_TRIS > 0 && (hTriCount % G_FLUSH_TRIS) == 0)
+    if (hFlushN > 0 && (hTriCount % hFlushN) == 0)
         gsKit_queue_exec(gs);
 }
 
@@ -1952,7 +1959,9 @@ static void house_draw(GSGLOBAL *gs, int brightness)
     gsKit_set_test(gs, GS_ZTEST_ON);
 
     hTriCount = 0;
-    mask = h_pvs_mask(cam[1]);
+    hZN = gDbgZ == 0 ? 0.25f : (gDbgZ == 1 ? 0.10f : 0.50f);
+    hFlushN = gDbgFlush == 0 ? 100 : (gDbgFlush == 1 ? 25 : 400);
+    mask = gDbgPvs ? 0xFFFFFFFFu : h_pvs_mask(cam[1]);
 
     {
         int ord[32], no = 0, q, w;
@@ -1995,7 +2004,7 @@ static void house_draw(GSGLOBAL *gs, int brightness)
         {
             const HBox *ch = &hChunks[j];
 
-            if (!h_box_visible(ch->mn, ch->mx, cam, Rv, Uv, Fv, kxe, kye))
+            if (!gDbgCull && !h_box_visible(ch->mn, ch->mx, cam, Rv, Uv, Fv, kxe, kye))
                 continue;
             if (hTriCount + (int)ch->b > H_MAX_TRIS)
                 continue;
@@ -2104,13 +2113,13 @@ static void dbg_digit(GSGLOBAL *gs, float x, float y, int d, u64 col)
     unsigned char m = seg[d];
     const float w = 8.0f, h = 7.0f, t = 2.0f;
 
-    if (m & 1)  gsKit_prim_sprite(gs, x, y, x + w, y + t, 3, col);
-    if (m & 2)  gsKit_prim_sprite(gs, x + w - t, y, x + w, y + h, 3, col);
-    if (m & 4)  gsKit_prim_sprite(gs, x + w - t, y + h, x + w, y + 2 * h, 3, col);
-    if (m & 8)  gsKit_prim_sprite(gs, x, y + 2 * h - t, x + w, y + 2 * h, 3, col);
-    if (m & 16) gsKit_prim_sprite(gs, x, y + h, x + t, y + 2 * h, 3, col);
-    if (m & 32) gsKit_prim_sprite(gs, x, y, x + t, y + h, 3, col);
-    if (m & 64) gsKit_prim_sprite(gs, x, y + h - 1.0f, x + w, y + h + 1.0f, 3, col);
+    if (m & 1)  gsKit_prim_sprite(gs, x, y, x + w, y + t, HUD_Z, col);
+    if (m & 2)  gsKit_prim_sprite(gs, x + w - t, y, x + w, y + h, HUD_Z, col);
+    if (m & 4)  gsKit_prim_sprite(gs, x + w - t, y + h, x + w, y + 2 * h, HUD_Z, col);
+    if (m & 8)  gsKit_prim_sprite(gs, x, y + 2 * h - t, x + w, y + 2 * h, HUD_Z, col);
+    if (m & 16) gsKit_prim_sprite(gs, x, y + h, x + t, y + 2 * h, HUD_Z, col);
+    if (m & 32) gsKit_prim_sprite(gs, x, y, x + t, y + h, HUD_Z, col);
+    if (m & 64) gsKit_prim_sprite(gs, x, y + h - 1.0f, x + w, y + h + 1.0f, HUD_Z, col);
 }
 
 /* linha: quadrado colorido (legenda) + número com 'nd' dígitos; negativo = barra na frente */
@@ -2123,16 +2132,16 @@ static void dbg_row(GSGLOBAL *gs, float x, float y, u64 tag, int value, int nd)
     if (neg) value = -value;
     for (i = nd - 1; i >= 0; i--) { d[i] = value % 10; value /= 10; }
 
-    gsKit_prim_sprite(gs, x - 4, y - 3, x + 18 + nd * 12 + 6, y + 19, 2, blk);
-    gsKit_prim_sprite(gs, x, y + 2, x + 10, y + 12, 3, tag);
-    if (neg) gsKit_prim_sprite(gs, x + 13, y + 6, x + 19, y + 8, 3, yel);
+    gsKit_prim_sprite(gs, x - 4, y - 3, x + 18 + nd * 12 + 6, y + 19, HUD_Z, blk);
+    gsKit_prim_sprite(gs, x, y + 2, x + 10, y + 12, HUD_Z, tag);
+    if (neg) gsKit_prim_sprite(gs, x + 13, y + 6, x + 19, y + 8, HUD_Z, yel);
     for (i = 0; i < nd; i++)
         dbg_digit(gs, x + 22 + i * 12, y, d[i], yel);
 }
 
 static void dbg_overlay(GSGLOBAL *gs, float H)
 {
-    float k = H / 448.0f, x = 70.0f * k, y = H - 150.0f * k;
+    float k = H / 448.0f, x = 70.0f * k, y = H - 180.0f * k;
     float fps = gRawDt > 0.0001f ? 1.0f / gRawDt : 99.0f;
 
     gFpsAvg += (fps - gFpsAvg) * 0.1f;
@@ -2140,6 +2149,7 @@ static void dbg_overlay(GSGLOBAL *gs, float H)
     dbg_row(gs, x, y + 24 * k,   GS_SETREG_RGBAQ(70, 120, 255, 0x80, 0),  hTriCount, 5);               /* azul: triângulos desenhados */
     dbg_row(gs, x, y + 48 * k,   GS_SETREG_RGBAQ(230, 40, 40, 0x80, 0),   hCur, 2);                    /* vermelho: cômodo atual */
     dbg_row(gs, x, y + 72 * k,   GS_SETREG_RGBAQ(255, 255, 255, 0x80, 0), (int)(gFeet * 10.0f), 3);    /* branco: altura dos pés x10 */
+    dbg_row(gs, x, y + 120 * k,  GS_SETREG_RGBAQ(255, 150, 0, 0x80, 0),   gDbgFlush * 1000 + gDbgZ * 100 + gDbgPvs * 10 + gDbgCull, 4); /* laranja: modos de teste */
     dbg_row(gs, x, y + 96 * k,   GS_SETREG_RGBAQ(230, 60, 230, 0x80, 0),  gStuckN, 3);   /* rosa: quadros seguidos empurrando sem sair do lugar na escada */
 }
 
@@ -2261,10 +2271,10 @@ hud:
         }
 
         /* mira: cruz branca com contorno preto */
-        gsKit_prim_sprite(gs, cx - 7.0f, cy - 2.0f, cx + 7.0f, cy + 2.0f, 2, dark);
-        gsKit_prim_sprite(gs, cx - 2.0f, cy - 7.0f, cx + 2.0f, cy + 7.0f, 2, dark);
-        gsKit_prim_sprite(gs, cx - 5.0f, cy - 1.0f, cx + 5.0f, cy + 1.0f, 2, white);
-        gsKit_prim_sprite(gs, cx - 1.0f, cy - 5.0f, cx + 1.0f, cy + 5.0f, 2, white);
+        gsKit_prim_sprite(gs, cx - 7.0f, cy - 2.0f, cx + 7.0f, cy + 2.0f, HUD_Z, dark);
+        gsKit_prim_sprite(gs, cx - 2.0f, cy - 7.0f, cx + 2.0f, cy + 7.0f, HUD_Z, dark);
+        gsKit_prim_sprite(gs, cx - 5.0f, cy - 1.0f, cx + 5.0f, cy + 1.0f, HUD_Z, white);
+        gsKit_prim_sprite(gs, cx - 1.0f, cy - 5.0f, cx + 1.0f, cy + 5.0f, HUD_Z, white);
 
         if (gDebug && hLoaded)
             dbg_overlay(gs, H);
@@ -2272,10 +2282,10 @@ hud:
         /* silhueta: primeiro todos os contornos, depois o branco */
         for (i = 0; i < n; i++)
             gsKit_prim_sprite(gs, hx + (r[i][0] - 2.0f) * k, hy + (r[i][1] - 2.0f) * k,
-                                  hx + (r[i][2] + 2.0f) * k, hy + (r[i][3] + 2.0f) * k, 2, dark);
+                                  hx + (r[i][2] + 2.0f) * k, hy + (r[i][3] + 2.0f) * k, HUD_Z, dark);
         for (i = 0; i < n; i++)
             gsKit_prim_sprite(gs, hx + r[i][0] * k, hy + r[i][1] * k,
-                                  hx + r[i][2] * k, hy + r[i][3] * k, 2, white);
+                                  hx + r[i][2] * k, hy + r[i][3] * k, HUD_Z, white);
     }
 }
 
@@ -2816,6 +2826,14 @@ int main(int argc, char *argv[])
 
                         if (pressedButtons & PAD_SELECT)
                             gDebug = !gDebug;
+
+                        if (gDebug)
+                        {
+                            if (pressedButtons & PAD_TRIANGLE) gDbgFlush = (gDbgFlush + 1) % 3;
+                            if (pressedButtons & PAD_SQUARE)   gDbgZ = (gDbgZ + 1) % 3;
+                            if (pressedButtons & PAD_L2)       gDbgPvs = !gDbgPvs;
+                            if (pressedButtons & PAD_R2)       gDbgCull = !gDbgCull;
+                        }
                     }
                     else /* SCREEN_CREDITS */
                     {
