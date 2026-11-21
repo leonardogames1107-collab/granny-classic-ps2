@@ -1394,7 +1394,7 @@ static void g_collide(float *px, float *pz, float h)
    ===================================================================== */
 #define H_STEP   0.32f     /* degrau máximo (m) */
 #define H_FAR    22.0f
-#define H_MAX_TRIS 6500    /* limite de triângulos por quadro */
+#define H_MAX_TRIS 12000   /* limite de triângulos por quadro (o que passa disso some = área preta) */
 
 typedef struct { float mn[3], mx[3]; unsigned int a, b; } HBox;
 
@@ -2146,27 +2146,47 @@ static void game_draw(GSGLOBAL *gs, int brightness)
         }
     }
 
-    /* 3) HUD: ponto central e silhueta (em pé / agachado) */
+    /* 3) HUD: ponto central e silhueta (em pé / agachado).
+       Branco com contorno preto, para aparecer sobre paredes claras, e longe
+       da borda, porque a TV corta as pontas da imagem. */
 hud:
     {
         u64 white = GS_SETREG_RGBAQ(255, 255, 255, 0x80, 0);
-        float hx = 36.0f, hy = 52.0f;
-
-        gsKit_prim_sprite(gs, W * 0.5f - 2.0f, H * 0.5f - 2.0f,
-                              W * 0.5f + 2.0f, H * 0.5f + 2.0f, 2, white);
+        u64 dark  = GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0);
+        float k  = H / 448.0f;            /* escala se a tela não for 448 de altura */
+        float hx = 78.0f * k, hy = 96.0f * k;
+        float cx = W * 0.5f, cy = H * 0.5f;
+        float r[4][4];
+        int n, i;
 
         if (!gCrouch)
         {
-            gsKit_prim_sprite(gs, hx - 5, hy - 22, hx + 5, hy - 12, 2, white);   /* cabeça */
-            gsKit_prim_sprite(gs, hx - 8, hy - 11, hx + 8, hy + 16, 2, white);   /* corpo  */
-            gsKit_prim_sprite(gs, hx - 7, hy + 17, hx + 7, hy + 32, 2, white);   /* pernas */
+            n = 3;
+            r[0][0] = -6; r[0][1] = -24; r[0][2] =  6; r[0][3] = -12;   /* cabeça */
+            r[1][0] = -10; r[1][1] = -11; r[1][2] = 10; r[1][3] = 18;   /* corpo  */
+            r[2][0] = -8; r[2][1] =  19; r[2][2] =  8; r[2][3] = 36;    /* pernas */
         }
         else
         {
-            gsKit_prim_sprite(gs, hx - 5, hy - 8, hx + 5, hy + 2, 2, white);
-            gsKit_prim_sprite(gs, hx - 8, hy + 3, hx + 8, hy + 18, 2, white);
-            gsKit_prim_sprite(gs, hx - 9, hy + 19, hx + 9, hy + 30, 2, white);
+            n = 3;
+            r[0][0] = -6; r[0][1] = -8;  r[0][2] =  6; r[0][3] =  4;
+            r[1][0] = -10; r[1][1] =  5; r[1][2] = 10; r[1][3] = 22;
+            r[2][0] = -11; r[2][1] = 23; r[2][2] = 11; r[2][3] = 34;
         }
+
+        /* mira: cruz branca com contorno preto */
+        gsKit_prim_sprite(gs, cx - 7.0f, cy - 2.0f, cx + 7.0f, cy + 2.0f, 2, dark);
+        gsKit_prim_sprite(gs, cx - 2.0f, cy - 7.0f, cx + 2.0f, cy + 7.0f, 2, dark);
+        gsKit_prim_sprite(gs, cx - 5.0f, cy - 1.0f, cx + 5.0f, cy + 1.0f, 2, white);
+        gsKit_prim_sprite(gs, cx - 1.0f, cy - 5.0f, cx + 1.0f, cy + 5.0f, 2, white);
+
+        /* silhueta: primeiro todos os contornos, depois o branco */
+        for (i = 0; i < n; i++)
+            gsKit_prim_sprite(gs, hx + (r[i][0] - 2.0f) * k, hy + (r[i][1] - 2.0f) * k,
+                                  hx + (r[i][2] + 2.0f) * k, hy + (r[i][3] + 2.0f) * k, 2, dark);
+        for (i = 0; i < n; i++)
+            gsKit_prim_sprite(gs, hx + r[i][0] * k, hy + r[i][1] * k,
+                                  hx + r[i][2] * k, hy + r[i][3] * k, 2, white);
     }
 }
 
