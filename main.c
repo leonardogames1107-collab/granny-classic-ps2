@@ -1611,17 +1611,21 @@ static void house_move(float dx, float dz, float headH, float dt)
 {
     float fy = 0.0f;
     int lv = h_level(gFeet);
+    /* Na escada o andar "muda" no meio do caminho e o jogador pode ficar
+       dentro de uma parede do andar novo. Se já está preso numa parede,
+       deixa andar livre (só o chão vale) até sair dela. */
+    int emb = h_wall_hit(lv, gPX, gPZ);
 
     if (dx != 0.0f)
     {
         float nx = gPX + dx;
-        if (!h_wall_hit(lv, nx, gPZ) && h_floor(nx, gPZ, gFeet, headH, &fy))
+        if ((emb || !h_wall_hit(lv, nx, gPZ)) && h_floor(nx, gPZ, gFeet, headH, &fy))
             gPX = nx;
     }
     if (dz != 0.0f)
     {
         float nz = gPZ + dz;
-        if (!h_wall_hit(lv, gPX, nz) && h_floor(gPX, nz, gFeet, headH, &fy))
+        if ((emb || !h_wall_hit(lv, gPX, nz)) && h_floor(gPX, nz, gFeet, headH, &fy))
             gPZ = nz;
     }
 
@@ -1852,6 +1856,40 @@ static void h_emit(GSGLOBAL *gs, const float *sx, const float *sy, const float *
         gsKit_queue_exec(gs);
 }
 
+/* Cômodos que podem ser vistos. Na escada o cômodo "atual" pelo mapa do
+   andar fica errado (e a tela ficava com buracos pretos); então, fora de um
+   piso de andar, junta a visibilidade de todos os cômodos cujo volume
+   contém a câmera. */
+static unsigned int h_pvs_mask(float eyeY)
+{
+    unsigned int m = hPvs[hCur];
+    float nearest = 1.0e9f;
+    int k, c;
+
+    for (k = 0; k < 5; k++)
+    {
+        float dd = gFeet - hLevel[k];
+        if (dd < 0.0f) dd = -dd;
+        if (dd < nearest) nearest = dd;
+    }
+    if (nearest < 0.30f)
+        return m;
+
+    for (c = 0; c < (int)hNC; c++)
+    {
+        const HBox *b = &hCells[c];
+        float my = gFeet + 0.9f;
+
+        if (gPX < b->mn[0] - 0.3f || gPX > b->mx[0] + 0.3f ||
+            gPZ < b->mn[2] - 0.3f || gPZ > b->mx[2] + 0.3f)
+            continue;
+        if ((eyeY >= b->mn[1] - 0.3f && eyeY <= b->mx[1] + 0.3f) ||
+            (my   >= b->mn[1] - 0.3f && my   <= b->mx[1] + 0.3f))
+            m |= hPvs[c];
+    }
+    return m;
+}
+
 static void house_draw(GSGLOBAL *gs, int brightness)
 {
     float W = (float)gs->Width, H = (float)gs->Height;
@@ -1876,7 +1914,7 @@ static void house_draw(GSGLOBAL *gs, int brightness)
     gsKit_set_test(gs, GS_ZTEST_ON);
 
     hTriCount = 0;
-    mask = hPvs[hCur];
+    mask = h_pvs_mask(cam[1]);
 
     {
         int ord[32], no = 0, q, w;
