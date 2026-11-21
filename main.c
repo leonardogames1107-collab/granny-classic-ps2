@@ -1393,6 +1393,7 @@ static void g_collide(float *px, float *pz, float h)
    que estão dentro da tela. Colisão e altura do chão vêm do arquivo.
    ===================================================================== */
 #define H_STEP   0.32f     /* degrau máximo (m) */
+#define H_CULL   0         /* 1 = descarta faces de costas (causava buracos pretos e teto transparente) */
 #define H_FAR    22.0f
 #define H_MAX_TRIS 12000   /* limite de triângulos por quadro (o que passa disso some = área preta) */
 
@@ -1410,6 +1411,11 @@ static const short *hTris = NULL, *hHt = NULL;
 static const unsigned char *hOcc = NULL, *hLab = NULL;
 static unsigned int hPvs[32];
 static float gFeet = 0.0f, gVY = 0.0f, gCamFeet = 0.0f;
+static float gForceT = 0.0f;      /* >0: ignora as paredes por um instante (anti-trava na escada) */
+static int   gStuckN = 0;         /* quadros seguidos empurrando sem sair do lugar */
+static int   gDebug = 0;          /* 1 = painel de números (SELECT liga/desliga) */
+static float gRawDt = 0.033f;     /* tempo real do último quadro (s) */
+static float gFpsAvg = 30.0f;
 static int hTriCount = 0;
 
 static unsigned int rd_u(const unsigned char *p, int off) { unsigned int v; memcpy(&v, p + off, 4); return v; }
@@ -1614,7 +1620,10 @@ static void house_move(float dx, float dz, float headH, float dt)
     /* Na escada o andar "muda" no meio do caminho e o jogador pode ficar
        dentro de uma parede do andar novo. Se já está preso numa parede,
        deixa andar livre (só o chão vale) até sair dela. */
-    int emb = h_wall_hit(lv, gPX, gPZ);
+    int emb = (gForceT > 0.0f) || h_wall_hit(lv, gPX, gPZ);
+
+    if (gForceT > 0.0f && headH > 1.2f)
+        headH = 1.2f;
 
     if (dx != 0.0f)
     {
@@ -1741,7 +1750,32 @@ static void game_step(float dt)
 
     if (hLoaded)
     {
-        house_move(vx * speed * dt, vz * speed * dt, h, dt);
+        {
+            float ox = gPX, oz = gPZ, want = len * speed * dt, nrst = 1.0e9f, mv;
+            int kq;
+
+            house_move(vx * speed * dt, vz * speed * dt, h, dt);
+
+            for (kq = 0; kq < 5; kq++)
+            {
+                float dd = gFeet - hLevel[kq];
+                if (dd < 0.0f) dd = -dd;
+                if (dd < nrst) nrst = dd;
+            }
+            mv = g_sqrt((gPX - ox) * (gPX - ox) + (gPZ - oz) * (gPZ - oz));
+            /* só vale na escada (fora do piso de um andar) */
+            if (want > 0.01f && mv < want * 0.25f && nrst >= 0.30f)
+                gStuckN++;
+            else
+                gStuckN = 0;
+            if (gForceT > 0.0f)
+                gForceT -= dt;
+            else if (gStuckN > 20)
+            {
+                gForceT = 0.7f;
+                gStuckN = 0;
+            }
+        }
         k = dt * 12.0f;
         if (k > 1.0f) k = 1.0f;
         gCamFeet += (gFeet - gCamFeet) * k;
@@ -1993,8 +2027,10 @@ static void house_draw(GSGLOBAL *gs, int brightness)
                 if (behind == 3 || allfar == 3)
                     continue;
 
-                /* face de um lado só: descarta se a câmera está do lado de trás */
-                if ((t[10] >> 8) & 3)
+                /* face de um lado só: descarta se a câmera está do lado de trás.
+                   DESLIGADO (H_CULL 0): em triângulos finos o teste erra por causa do
+                   arredondamento das coordenadas e some pedaço de chão/teto. */
+                if (H_CULL && ((t[10] >> 8) & 3))
                 {
                     float e1x = v[1].x - v[0].x, e1y = v[1].y - v[0].y, e1z = v[1].z - v[0].z;
                     float e2x = v[2].x - v[0].x, e2y = v[2].y - v[0].y, e2z = v[2].z - v[0].z;
@@ -2055,6 +2091,52 @@ static void house_draw(GSGLOBAL *gs, int brightness)
     }
 
     gsKit_set_test(gs, GS_ZTEST_OFF);        /* HUD por cima de tudo */
+}
+
+/* ---- painel de números para diagnóstico (SELECT liga/desliga) ---- */
+static void dbg_digit(GSGLOBAL *gs, float x, float y, int d, u64 col)
+{
+    static const unsigned char seg[10] = { 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F };
+    unsigned char m = seg[d];
+    const float w = 8.0f, h = 7.0f, t = 2.0f;
+
+    if (m & 1)  gsKit_prim_sprite(gs, x, y, x + w, y + t, 3, col);
+    if (m & 2)  gsKit_prim_sprite(gs, x + w - t, y, x + w, y + h, 3, col);
+    if (m & 4)  gsKit_prim_sprite(gs, x + w - t, y + h, x + w, y + 2 * h, 3, col);
+    if (m & 8)  gsKit_prim_sprite(gs, x, y + 2 * h - t, x + w, y + 2 * h, 3, col);
+    if (m & 16) gsKit_prim_sprite(gs, x, y + h, x + t, y + 2 * h, 3, col);
+    if (m & 32) gsKit_prim_sprite(gs, x, y, x + t, y + h, 3, col);
+    if (m & 64) gsKit_prim_sprite(gs, x, y + h - 1.0f, x + w, y + h + 1.0f, 3, col);
+}
+
+/* linha: quadrado colorido (legenda) + número com 'nd' dígitos; negativo = barra na frente */
+static void dbg_row(GSGLOBAL *gs, float x, float y, u64 tag, int value, int nd)
+{
+    u64 yel = GS_SETREG_RGBAQ(255, 235, 60, 0x80, 0);
+    u64 blk = GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0);
+    int i, neg = value < 0, d[8];
+
+    if (neg) value = -value;
+    for (i = nd - 1; i >= 0; i--) { d[i] = value % 10; value /= 10; }
+
+    gsKit_prim_sprite(gs, x - 4, y - 3, x + 18 + nd * 12 + 6, y + 19, 2, blk);
+    gsKit_prim_sprite(gs, x, y + 2, x + 10, y + 12, 3, tag);
+    if (neg) gsKit_prim_sprite(gs, x + 13, y + 6, x + 19, y + 8, 3, yel);
+    for (i = 0; i < nd; i++)
+        dbg_digit(gs, x + 22 + i * 12, y, d[i], yel);
+}
+
+static void dbg_overlay(GSGLOBAL *gs, float H)
+{
+    float k = H / 448.0f, x = 70.0f * k, y = H - 150.0f * k;
+    float fps = gRawDt > 0.0001f ? 1.0f / gRawDt : 99.0f;
+
+    gFpsAvg += (fps - gFpsAvg) * 0.1f;
+    dbg_row(gs, x, y,            GS_SETREG_RGBAQ(40, 220, 40, 0x80, 0),   (int)(gFpsAvg + 0.5f), 2);   /* verde: quadros por segundo */
+    dbg_row(gs, x, y + 24 * k,   GS_SETREG_RGBAQ(70, 120, 255, 0x80, 0),  hTriCount, 5);               /* azul: triângulos desenhados */
+    dbg_row(gs, x, y + 48 * k,   GS_SETREG_RGBAQ(230, 40, 40, 0x80, 0),   hCur, 2);                    /* vermelho: cômodo atual */
+    dbg_row(gs, x, y + 72 * k,   GS_SETREG_RGBAQ(255, 255, 255, 0x80, 0), (int)(gFeet * 10.0f), 3);    /* branco: altura dos pés x10 */
+    dbg_row(gs, x, y + 96 * k,   GS_SETREG_RGBAQ(230, 60, 230, 0x80, 0),  gStuckN + (gForceT > 0.0f ? 100 : 0), 3); /* rosa: tempo preso (1xx = destravando) */
 }
 
 static void game_draw(GSGLOBAL *gs, int brightness)
@@ -2179,6 +2261,9 @@ hud:
         gsKit_prim_sprite(gs, cx - 2.0f, cy - 7.0f, cx + 2.0f, cy + 7.0f, 2, dark);
         gsKit_prim_sprite(gs, cx - 5.0f, cy - 1.0f, cx + 5.0f, cy + 1.0f, 2, white);
         gsKit_prim_sprite(gs, cx - 1.0f, cy - 5.0f, cx + 1.0f, cy + 5.0f, 2, white);
+
+        if (gDebug && hLoaded)
+            dbg_overlay(gs, H);
 
         /* silhueta: primeiro todos os contornos, depois o branco */
         for (i = 0; i < n; i++)
@@ -2724,6 +2809,9 @@ int main(int argc, char *argv[])
 
                         if (pressedButtons & PAD_START)
                             gExitReq = 1;
+
+                        if (pressedButtons & PAD_SELECT)
+                            gDebug = !gDebug;
                     }
                     else /* SCREEN_CREDITS */
                     {
@@ -2765,6 +2853,7 @@ int main(int argc, char *argv[])
             float dtG = (float)((double)(unsigned int)(nowT - gLastTick) / gTps);
 
             gLastTick = nowT;
+            gRawDt = dtG;
             if (dtG > 0.05f) dtG = 0.05f;
 
             game_step(dtG);
