@@ -1419,6 +1419,9 @@ static int   gDbgZ = 0;           /* QUADRADO troca a escala da profundidade */
 static int   gDbgPvs = 0;         /* L2 liga/desliga a lista de cômodos visíveis */
 static int   gDbgCull = 0;        /* R2 liga/desliga o descarte de pedaços fora da tela */
 static float hZN = 0.25f;
+static const unsigned char *hVox = NULL;   /* tabela: quais pedaços do modelo se vê de cada trecho do chão */
+static unsigned int hNV = 0;
+static float hVXZ = 1.2f, hVY = 0.9f, hVY0 = -2.9f;
 static int   hFlushN = 100;
 #define HUD_Z 65535               /* HUD no Z máximo: passa no teste de profundidade em qualquer lugar */
 static float gRawDt = 0.033f;     /* tempo real do último quadro (s) */
@@ -1504,8 +1507,61 @@ static int house_load(const char *path)
     for (i = 0; i < (int)hNC; i++)
         hPvs[i] = rd_u(hData, (int)offP + 4 * i);
 
+    /* visibilidade por trecho do chão (opcional): deslocamento no cabeçalho, byte 132 */
+    hVox = NULL; hNV = 0;
+    {
+        unsigned int offV = rd_u(hData, 132);
+
+        if (offV != 0u && offV + 16u <= (unsigned int)sz)
+        {
+            unsigned int nv = rd_u(hData, (int)offV + 12);
+
+            if (offV + 16u + nv * 72u <= (unsigned int)sz)
+            {
+                hVXZ = rd_f(hData, (int)offV);
+                hVY  = rd_f(hData, (int)offV + 4);
+                hVY0 = rd_f(hData, (int)offV + 8);
+                hNV  = nv;
+                hVox = hData + offV + 16;
+            }
+        }
+    }
+
     hLoaded = 1;
     return 1;
+}
+
+static int g_floori(float v)
+{
+    int i = (int)v;
+
+    return (v < (float)i) ? i - 1 : i;
+}
+
+/* Tabela de visibilidade do trecho onde o jogador está (NULL se não houver). */
+static const unsigned char *h_find_vox(void)
+{
+    int ix, iz, iy;
+    unsigned int i;
+
+    if (hVox == NULL || hVXZ <= 0.0f || hVY <= 0.0f)
+        return NULL;
+
+    ix = g_floori(gPX / hVXZ);
+    iz = g_floori(gPZ / hVXZ);
+    iy = g_floori((gFeet - hVY0) / hVY);
+
+    for (i = 0; i < hNV; i++)
+    {
+        const unsigned char *r = hVox + (size_t)i * 72;
+        int a = (short)(r[0] | (r[1] << 8));
+        int b = (short)(r[2] | (r[3] << 8));
+        int c = (short)(r[4] | (r[5] << 8));
+
+        if (a == ix && b == iz && c == iy)
+            return r + 8;
+    }
+    return NULL;
 }
 
 static int h_level(float feet)
@@ -1944,6 +2000,7 @@ static void house_draw(GSGLOBAL *gs, int brightness)
     float sy_ = g_sin(gYaw), cy_ = g_cos(gYaw), sp = g_sin(gPitch), cp = g_cos(gPitch);
     float Fv[3], Rv[3], Uv[3], cam[3];
     unsigned int mask;
+    const unsigned char *vb;
     int c, j, i;
     const float inv = 1.0f / 256.0f;
 
@@ -1961,7 +2018,8 @@ static void house_draw(GSGLOBAL *gs, int brightness)
     hTriCount = 0;
     hZN = gDbgZ == 0 ? 0.25f : (gDbgZ == 1 ? 0.10f : 0.50f);
     hFlushN = gDbgFlush == 0 ? 100 : (gDbgFlush == 1 ? 25 : 400);
-    mask = gDbgPvs ? 0xFFFFFFFFu : h_pvs_mask(cam[1]);
+    vb = gDbgPvs ? NULL : h_find_vox();
+    mask = (gDbgPvs || hVox != NULL) ? 0xFFFFFFFFu : h_pvs_mask(cam[1]);
 
     {
         int ord[32], no = 0, q, w;
@@ -2004,6 +2062,8 @@ static void house_draw(GSGLOBAL *gs, int brightness)
         {
             const HBox *ch = &hChunks[j];
 
+            if (vb != NULL && !((vb[j >> 3] >> (j & 7)) & 1))
+                continue;
             if (!gDbgCull && !h_box_visible(ch->mn, ch->mx, cam, Rv, Uv, Fv, kxe, kye))
                 continue;
             if (hTriCount + (int)ch->b > H_MAX_TRIS)
@@ -2105,6 +2165,9 @@ static void house_draw(GSGLOBAL *gs, int brightness)
 
     gsKit_set_test(gs, GS_ZTEST_OFF);        /* HUD por cima de tudo */
 }
+
+static GSTEXTURE hudTex;
+static int hudOk = 0, hudTried = 0;
 
 /* ---- painel de números para diagnóstico (SELECT liga/desliga) ---- */
 static void dbg_digit(GSGLOBAL *gs, float x, float y, int d, u64 col)
@@ -2246,6 +2309,27 @@ static void game_draw(GSGLOBAL *gs, int brightness)
        Branco com contorno preto, para aparecer sobre paredes claras, e longe
        da borda, porque a TV corta as pontas da imagem. */
 hud:
+    /* HUD em imagem com fundo transparente: GRANNY/hud.png (144x48: mira | em pé | agachado) */
+    if (!hudTried)
+    {
+        hudTried = 1;
+        hudOk = load_png(gs, &hudTex, "hud");
+    }
+    if (hudOk)
+    {
+        u64 col = GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0);
+
+        gsKit_set_primalpha(gs, GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0);
+        gs->PrimAlphaEnable = GS_SETTING_ON;
+        draw_sub(gs, &hudTex, 320.0f - 24.0f, 224.0f - 24.0f, 48.0f, 48.0f, 0.0f, 0.0f, col, HUD_Z);
+        draw_sub(gs, &hudTex, 640.0f - 120.0f, 448.0f - 112.0f, 48.0f, 48.0f,
+                 gCrouch ? 96.0f : 48.0f, 0.0f, col, HUD_Z);
+        gs->PrimAlphaEnable = GS_SETTING_OFF;
+
+        if (gDebug && hLoaded)
+            dbg_overlay(gs, H);
+        return;
+    }
     {
         u64 white = GS_SETREG_RGBAQ(255, 255, 255, 0x80, 0);
         u64 dark  = GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0);
