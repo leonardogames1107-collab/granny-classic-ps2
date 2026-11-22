@@ -35,6 +35,10 @@ jobs:
           cp jogarx_??.png GRANNY/
           cp musica_menu.wav GRANNY/
           cp som_cursor.wav GRANNY/
+          cp casa.bin GRANNY/
+          cp hud.png GRANNY/
+          [ -f som_confirma.wav ] && cp som_confirma.wav GRANNY/ || true
+          [ -f CREDITOS_MODELO.txt ] && cp CREDITOS_MODELO.txt GRANNY/ || true
           cp icon.sys GRANNY/
           cp bastao2.ico GRANNY/
           ls -l GRANNY
